@@ -6,6 +6,10 @@
 // To build without formatted logs (for piping or M-x compile):
 // sbt -Dsbt.log.noformat=true compile
 
+package cs7641
+
+import cs7641.Utils._
+
 import org.apache.spark.rdd.RDD
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
@@ -41,32 +45,32 @@ object UnsupervisedLearning {
     val faults = readSteelFaults(sc)
     val faultsIn = faults.map(_._1)
     val faultsOut = faults.map(_._2)
-    val summary: MultivariateStatisticalSummary = Statistics.colStats(faultsIn)
-    println("Mean: %s" format summary.mean)
-    println("Variance: %s" format summary.variance)
 
-    val mean = new BDV(summary.mean.toArray)
-    val stdev = new BDV(summary.variance.toArray).map(Math.sqrt)
-    val faultsNormed = faultsIn.map { v =>
-      // This is kludge-tastic:
-      val v1 = new BDV(v.toArray)
-      val v2 = (v1 - mean) / stdev
-      Vectors.dense(v2.toArray)
-    }
+    val faultsNormed = normalize(faultsIn)
 
     // Cluster the data into two classes using KMeans
     for (numClusters <- 2 to 40) {
-      val numIterations = 100
 
-      val clusters = KMeans.train(faultsNormed, numClusters, numIterations)
-      // Evaluate clustering by computing Within Set Sum of Squared Errors
+      // Train K-Means & output some basic information:
+      val numIterations = 100
+      val model : KMeansModel = KMeans.train(faultsNormed, numClusters, numIterations)
       val WSSSE = clusters.computeCost(faultsNormed)
-      println(s"Non-PCA, k = $numClusters: WSSSE = $WSSSE")
+      println(s"k = $numClusters: WSSSE = $WSSSE")
+
+      // Determine which instances belong to which cluster:
+      val clusters : RDD[Int] = model.predict(faultsNormed)
+
+      // Compute & output a histogram of these:
+      val hist = clusters.countByValue()
+      val classes = hist.keys.toList.sorted
+      classes.foreach { k =>
+        val count = hist(k)
+        println(s"Class $k, $count elements")
+      }
       /*
       for (center <- clusters.clusterCenters) {
         println(s"$center")
-      }
-       */
+      }*/
     }
 
     for (dims <- 4 to 16) {
@@ -75,15 +79,6 @@ object UnsupervisedLearning {
       val pcaMtx = pca.pc
       //println(s"PCA matrix: $pcaMtx")
       val faults2 = pca.transform(faultsNormed)
-
-      for (numClusters <- 2 to 40) {
-        val numIterations = 100
-
-        val clusters = KMeans.train(faults2, numClusters, numIterations)
-        // Evaluate clustering by computing Within Set Sum of Squared Errors
-        val WSSSE = clusters.computeCost(faults2)
-        println(s"PCA ($dims dimensions), k = $numClusters: WSSSE = $WSSSE")
-      }
     }
 
     /*

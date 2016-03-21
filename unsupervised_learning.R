@@ -29,12 +29,16 @@ colnames(faults) <- readLines("Faults27x7_var");
 depCol <- c("Pastry", "Z_Scratch", "K_Scatch", "Stains",
             "Dirtiness", "Bumps", "Other_Faults");
 ## Turn these into a factor:
-resp <- factor(apply(faults[depCol], 1, function(x) which(x == 1)),
-               labels = depCol);
+## resp <- factor(apply(faults[depCol], 1, function(x) which(x == 1)),
+##                labels = depCol);
 
 ## Set that factor to 'Fault' and remove the variables that created it:
-faults$Fault <- resp;
-faults[depCol] <- list(NULL);
+## faults$Fault <- resp;
+## faults[depCol] <- list(NULL);
+
+## Also standardize the data to mean 0, variance 1, leaving out the
+## labels:
+faultsNorm <- data.frame(scale(faults[-which(names(faults) %in% depCol)]))
 
 ## Load data for "Letter Recognition" data set & apply headers:
 letters <- read.table("letter-recognition.data", sep=",", header=FALSE);
@@ -44,3 +48,13 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
                        "XedgeXY", "Yedge", "YedgeYX");
 ## https://archive.ics.uci.edu/ml/datasets/Letter+Recognition
 
+###########################################################################
+## k-means
+###########################################################################
+
+clusters <- kmeans(faultsNorm, 20, 20);
+## f <- fitted(clusters, "classes");
+labels <- faults[depCol];
+labels$class <- clusters$cluster;
+labelsAvg <- aggregate(. ~ class, labels, mean);
+labelsAvg$size <- clusters$size[labelsAvg$class];

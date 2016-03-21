@@ -1,9 +1,17 @@
 package cs7641
 
+// Spark:
 import org.apache.spark.rdd.RDD
 import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
 import org.apache.spark.mllib.linalg.{Vectors, Vector}
 import breeze.linalg.{DenseVector => BDV}
+
+// NetCDF:
+/*
+import ucar.nc2.{NetcdfFile, NetcdfFileWriter, Dimension, Variable}
+import ucar.ma2.DataType
+import ucar.ma2.{Array => netcdfArray}
+ */
 
 package object Utils {
 
@@ -20,5 +28,7 @@ package object Utils {
       Vectors.dense(v2.toArray)
     }
   }
-  
+
+
+
 }

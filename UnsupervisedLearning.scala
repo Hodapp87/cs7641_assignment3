@@ -39,41 +39,23 @@ object UnsupervisedLearning {
     
     // TODO: Fix the below to work with what's given in
     // https://spark.apache.org/docs/latest/programming-guide.html#initializing-spark
-    val conf = new SparkConf()
-      .setAppName("Unsupervised Learning")
-      .setMaster("local[*]")
+    val conf = new SparkConf().setAppName("Unsupervised Learning").setMaster("local[*]")
     val sc = new SparkContext(conf)
     // TODO: Can I just log to a file instead?
     val rootLogger = Logger.getRootLogger()
     rootLogger.setLevel(Level.ERROR)
 
+    // Read in data, and extract inputs & labels:
     val faults = readSteelFaults(sc)
     val faultsIn = faults.map(_._1)
     val faultsOut = faults.map(_._2)
-
     val faultsNormed = normalize(faultsIn)
 
-      // Compute & output a histogram of these:
-      /*
-      val hist = clusters.countByValue()
-      val classes = hist.keys.toList.sorted
-      classes.foreach { k =>
-        val count = hist(k)
-        println(s"Class $k, $count elements")
-      }*/
-      /*
-      for (center <- clusters.clusterCenters) {
-        println(s"$center")
-      }*/
-
-    val cdfFile = NetcdfFileWriter.createNew(
-      NetcdfFileWriter.Version.netcdf4, "./test.cdf")
-    val dataVar = cdfFile.addVariable(null, "testID", DataType.STRING, List())
-    val str = netcdfArray.factory(
-      DataType.STRING, (Array().toArray : Array[Int]), Array("foo"))
-    cdfFile.create()
-    cdfFile.write(dataVar, str)
-    cdfFile.close()
+    val testClusters = List(5,10,15,20,25,30,35,40)
+    val iters = 100
+    val models : List[KMeansModel] = testClusters.map { count =>
+      KMeans.train(faultsNormed, count, iters)
+    }
 
     // TODO: I don't need to perform PCA for every single number of
     // dimensions.  I can just do 'full' PCA and truncate the weights.
@@ -99,6 +81,9 @@ object UnsupervisedLearning {
         val WSSSE = model.computeCost(faults2)
         println(s"dims = $dims, k = $numClusters: WSSSE = $WSSSE")
 
+        val classes = separateClasses(model, faults2, faultsOut)
+
+        /*
         // Determine a cluster index for each instance:
         val clusters : RDD[Int] = model.predict(faults2)
 
@@ -112,14 +97,25 @@ object UnsupervisedLearning {
             // RDDs).
             case (id, iter) => (id, sc.parallelize(iter.map(_._2).toSeq))
           }
+         */
 
         classes.foreach { case(id,v) =>
+          val v_ = sc.parallelize(v)
           println("%s, count %d, %s" format
-            (id, v.count, Statistics.colStats(v).variance.toArray.sum))
+            (id, v_.count, Statistics.colStats(v_).variance.toArray.sum))
         }
 
       }
     }
+
+    val cdfFile = NetcdfFileWriter.createNew(
+      NetcdfFileWriter.Version.netcdf4, "./test.cdf")
+    val dataVar = cdfFile.addVariable(null, "testID", DataType.STRING, List())
+    val str = netcdfArray.factory(
+      DataType.STRING, (Array().toArray : Array[Int]), Array("foo"))
+    cdfFile.create()
+    cdfFile.write(dataVar, str)
+    cdfFile.close()
 
     /*
     for (k <- 2 to 10) {
@@ -142,7 +138,7 @@ object UnsupervisedLearning {
     sc.stop()
   }
 
-  /** Read all the data from the "Steel Faults" data set, returning
+  /** Reads all the data from the "Steel Faults" data set, returning
     * an RDD of (inputs, outputs). */
   def readSteelFaults(sc : SparkContext) : RDD[(Vector, Vector)] = {
     val fname = "./Faults.NNA"
@@ -153,5 +149,25 @@ object UnsupervisedLearning {
     val rows = data.count()
     println(s"Read $rows rows from $fname.")
     data
+  }
+
+  /** Given a KMeansModel, input instances, and corresponding labels,
+    * uses the model to assign classes to the inputs - then returns
+    * cluster indices paired with corresponding labels.
+    */
+  def separateClasses(
+    model : KMeansModel, inputs : RDD[Vector], labels : RDD[Vector]) :
+      Array[(Int, Seq[Vector])] =
+  {
+    // Determine a cluster index for each instance:
+    val clusters : RDD[Int] = model.predict(inputs)
+
+    // And then group these together with the class labels:
+    clusters.zip(labels).groupBy(_._1).collect.map {
+      // We have at this stage (Int, Iterable[(Int, Vector)]),
+      // which is a little clumsy and redundant.  We don't need
+      // the IDs inside the Iterable.
+      case (id, iter) => (id, iter.map(_._2).toSeq)
+    }
   }
 }

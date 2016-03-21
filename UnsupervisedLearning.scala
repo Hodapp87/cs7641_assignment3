@@ -6,26 +6,32 @@
 // To build without formatted logs (for piping or M-x compile):
 // sbt -Dsbt.log.noformat=true compile
 
-// Running spark-shell with this:
-// spark-shell --driver-class-path /home/hodapp/source/cs7641_assignment3/target/scala-2.10/classes
-
 package cs7641
 
 // Local dependencies:
 import cs7641.Utils._
 
+// Spark:
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.{RDD, DoubleRDDFunctions}
-
 import org.apache.spark.mllib.linalg.{Vectors, Vector}
 import org.apache.spark.mllib.clustering._
 import org.apache.spark.mllib.feature.PCA
 import org.apache.spark.mllib.stat.{MultivariateStatisticalSummary, Statistics}
 
+// Breeze:
 import breeze.linalg.{DenseVector => BDV}
+
+// log4j:
 import org.apache.log4j.{Level, Logger}
+
+// For NetCDF:
+import scala.collection.JavaConversions._
+import ucar.nc2.{NetcdfFile, NetcdfFileWriter, Dimension, Variable}
+import ucar.ma2.DataType
+import ucar.ma2.{Array => netcdfArray}
 
 object UnsupervisedLearning {
 
@@ -47,33 +53,6 @@ object UnsupervisedLearning {
 
     val faultsNormed = normalize(faultsIn)
 
-    // Cluster the data into two classes using KMeans
-    for (numClusters <- List(5, 10, 20, 40, 80)) {
-
-      // Train K-Means & output some basic information:
-      val numIterations = 100
-      val model : KMeansModel = KMeans.train(faultsNormed, numClusters, numIterations)
-      val WSSSE = model.computeCost(faultsNormed)
-      println(s"k = $numClusters: WSSSE = $WSSSE")
-
-      // Determine a cluster index for each instance:
-      val clusters : RDD[Int] = model.predict(faultsNormed)
-
-      // And then group these together with the class labels:
-      val classes : Array[(Int, RDD[Vector])] =
-        clusters.zip(faultsOut).groupBy(_._1).collect.map {
-          // We have at this stage (Int, Iterable[(Int, Vector)]),
-          // which is a little clumsy and redundant.  We don't need
-          // the IDs inside the Iterable, and we also want to turn it
-          // to an RDD (hence the .collect above - we cannot nest
-          // RDDs).
-          case (id, iter) => (id, sc.parallelize(iter.map(_._2).toSeq))
-        }
-
-      classes.foreach { case(id,v) =>
-        println("%s, count %d, %s" format (id, v.count, Statistics.colStats(v).mean))
-      }
-
       // Compute & output a histogram of these:
       /*
       val hist = clusters.countByValue()
@@ -86,14 +65,60 @@ object UnsupervisedLearning {
       for (center <- clusters.clusterCenters) {
         println(s"$center")
       }*/
-    }
 
-    for (dims <- 4 to 16) {
-      // Attempt PCA
-      val pca = new PCA(dims).fit(faultsNormed)
-      val pcaMtx = pca.pc
-      //println(s"PCA matrix: $pcaMtx")
-      val faults2 = pca.transform(faultsNormed)
+    val cdfFile = NetcdfFileWriter.createNew(
+      NetcdfFileWriter.Version.netcdf4, "./test.cdf")
+    val dataVar = cdfFile.addVariable(null, "testID", DataType.STRING, List())
+    val str = netcdfArray.factory(
+      DataType.STRING, (Array().toArray : Array[Int]), Array("foo"))
+    cdfFile.create()
+    cdfFile.write(dataVar, str)
+    cdfFile.close()
+
+    // TODO: I don't need to perform PCA for every single number of
+    // dimensions.  I can just do 'full' PCA and truncate the weights.
+    for (dims <- List(0) ++ (4 to 16)) {
+      val faults2 = {
+        if (dims > 0) {
+          // Attempt PCA
+          val pca = new PCA(dims).fit(faultsNormed)
+          val pcaMtx = pca.pc
+          //println(s"PCA matrix: $pcaMtx")
+          pca.transform(faultsNormed)
+        } else {
+          faultsNormed
+        }
+      }
+
+      // Cluster the data into two classes using KMeans
+      for (numClusters <- List(5, 10, 20, 40, 80)) {
+
+        // Train K-Means & output some basic information:
+        val numIterations = 100
+        val model : KMeansModel = KMeans.train(faults2, numClusters, numIterations)
+        val WSSSE = model.computeCost(faults2)
+        println(s"dims = $dims, k = $numClusters: WSSSE = $WSSSE")
+
+        // Determine a cluster index for each instance:
+        val clusters : RDD[Int] = model.predict(faults2)
+
+        // And then group these together with the class labels:
+        val classes : Array[(Int, RDD[Vector])] =
+          clusters.zip(faultsOut).groupBy(_._1).collect.map {
+            // We have at this stage (Int, Iterable[(Int, Vector)]),
+            // which is a little clumsy and redundant.  We don't need
+            // the IDs inside the Iterable, and we also want to turn it
+            // to an RDD (hence the .collect above - we cannot nest
+            // RDDs).
+            case (id, iter) => (id, sc.parallelize(iter.map(_._2).toSeq))
+          }
+
+        classes.foreach { case(id,v) =>
+          println("%s, count %d, %s" format
+            (id, v.count, Statistics.colStats(v).variance.toArray.sum))
+        }
+
+      }
     }
 
     /*
@@ -120,7 +145,7 @@ object UnsupervisedLearning {
   /** Read all the data from the "Steel Faults" data set, returning
     * an RDD of (inputs, outputs). */
   def readSteelFaults(sc : SparkContext) : RDD[(Vector, Vector)] = {
-    val fname = "/home/hodapp/source/cs7641_assignment3/Faults.NNA"
+    val fname = "./Faults.NNA"
     val data = sc.textFile(fname).map { str =>
       val vals = str.split('\t').map(_.toDouble)
       (Vectors.dense(vals.slice(0, 27)), Vectors.dense(vals.slice(27, 34)))

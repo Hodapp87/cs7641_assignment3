@@ -52,9 +52,53 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
 ## k-means
 ###########################################################################
 
-clusters <- kmeans(faultsNorm, 20, 20);
-## f <- fitted(clusters, "classes");
+clusters <- kmeans(faultsNorm, 7, 100);
+
+## Get just the labels, and put the classes alongside:
 labels <- faults[depCol];
 labels$class <- clusters$cluster;
+
+## Compute squared distance from each instance to the cluster that
+## 'owns' it:
+sqDist <- data.frame(
+    sqDist = rowSums((clusters$center[labels$class,] - faultsNorm)^2),
+    class = clusters$cluster);
+sqDistSum <- aggregate(sqDist ~ class, sqDist, sum);
+bins <- 40;
+breaks <- c(seq(min(sqDist$sqDist), mean(sqDist$sqDist), length=bins),
+            max(sqDist$sqDist));
+sqDistHist <- aggregate(
+    sqDist ~ class,
+    sqDist,
+    function(x) {
+        h <- hist(x, breaks = breaks, plot = FALSE)
+        ## Drop the last bin (it's just a catch-all):
+        return(h$density[-bins]);
+    },
+    simplify = FALSE);
+## This just passes dummy data to get the midpoints:
+mids <- hist(breaks, breaks = breaks, plot = FALSE)$mids[-bins]
+h <- apply(sqDistHist,
+   1,
+   function(df) data.frame(
+                    hist = df$sqDist,
+                    class = df$class,
+                    bins = mids));
+do.call(rbind, h);
+
+## Average the labels (as binary vectors) across each class:
 labelsAvg <- aggregate(. ~ class, labels, mean);
+## Set 'argmax' to the factor that has the highest average:
+## (sort of like we did with the neural networks)
+labelsAvg$argmax <- factor(apply(labelsAvg[depCol], 1, which.max),
+                           labels = depCol, levels = 1:length(depCol));
+## Set 'errRate' to the sum of other factors (these are all "wrong" if
+## we use the highest factor):
+labelsAvg$errRate <- apply(
+    labelsAvg[depCol], 1, function(x) (1 - max(x)));
+## Then set 'err' to that multiplied by the cluster size to tell us
+## error as a number of instances, not as a rate:
 labelsAvg$size <- clusters$size[labelsAvg$class];
+labelsAvg$err <- labelsAvg$errRate * labelsAvg$size;
+## This then gives one metric of error:
+sum(labelsAvg$err) / nrow(labels);

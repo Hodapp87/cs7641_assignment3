@@ -141,8 +141,14 @@ contribStacked <- stack(data.frame(t(contrib)));
 ## We need to know which feature produced each row in this 'stacked'
 ## data frame, so do this with R's recycling behavior:
 contribStacked$feature <- colnames(contrib);
+## Column 'ind' is not numerical, and it is sorting wrong.  It's of
+## the format "P1", "P2", and so on - so remove the first character,
+## and evaluate to an integer.
+contribStacked$ind <- strtoi(substring(contribStacked$ind, 2));
+## This is really kludgy but I don't know how to get around it.
 
 ggplot(data=contribStacked,
        aes(x=ind, y=values, group=feature)) +
-    geom_line(aes(colour=feature))
+    geom_line(aes(colour=feature)) +
+    xlab("Principal component")
 ## Problem: Column 'ind' is not numerical, and it is sorting wrong.

@@ -9,6 +9,7 @@
 
 library(ggplot2);
 library(RSNNS);
+library(mclust);
 
 ###########################################################################
 ## Data Loading & Other Boilerplate
@@ -94,7 +95,7 @@ dtmp <- apply(
                      bins = mids[-bins]));
 distFlat <- do.call(rbind, dtmp);
 
-ggplot(data = distFlat,
+ggplot(data=distFlat,
        aes(x=bins, y=hist, group=factor(class))) +
     geom_line(aes(colour=factor(class))) +
     xlab("Distance to cluster center") +
@@ -117,3 +118,31 @@ labelsAvg$size <- clusters$size[labelsAvg$class];
 labelsAvg$err <- labelsAvg$errRate * labelsAvg$size;
 ## This then gives one metric of error:
 sum(labelsAvg$err) / nrow(labels);
+
+###########################################################################
+## PCA
+###########################################################################
+pca <- prcomp(faultsNorm);
+
+pcaPlot <- data.frame(pcaStdev = pca$sdev,
+                      pcaDim = 1:ncol(faultsNorm));
+ggplot(data=pcaPlot,
+       aes(x=pcaDim, y=pcaStdev)) +
+    geom_line()
+## biplot(pca, pc.biplot = TRUE, scale = 0.8);
+
+## Now, this might give some notion of the contribution of each
+## original component up to the indication principal:
+contrib <- apply(pca$rotation^2, 1, cumsum);
+## (That is, row 'i' stands for the i'th principal component and
+## column 'j' for the j'th feature, and the value at (i,j) is how much
+## feature 'j' has contributed to the first 'i' principals.)
+contribStacked <- stack(data.frame(t(contrib)));
+## We need to know which feature produced each row in this 'stacked'
+## data frame, so do this with R's recycling behavior:
+contribStacked$feature <- colnames(contrib);
+
+ggplot(data=contribStacked,
+       aes(x=ind, y=values, group=feature)) +
+    geom_line(aes(colour=feature))
+## Problem: Column 'ind' is not numerical, and it is sorting wrong.

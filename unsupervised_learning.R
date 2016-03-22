@@ -64,27 +64,42 @@ sqDist <- data.frame(
     sqDist = rowSums((clusters$center[labels$class,] - faultsNorm)^2),
     class = clusters$cluster);
 sqDistSum <- aggregate(sqDist ~ class, sqDist, sum);
-bins <- 40;
-breaks <- c(seq(min(sqDist$sqDist), mean(sqDist$sqDist), length=bins),
+bins <- 500;
+## In 'breaks' we must include the max(...) or otherwise 'hist' won't
+## complete, as values will fall outside the bins.  We set the rest to
+## 2*mean because that seems (empirically) to be a useful range, and
+## then remove the final bin at the end because it distorts the axis.
+breaks <- c(seq(0,
+                mean(sqDist$sqDist) * 2,
+                length=bins),
             max(sqDist$sqDist));
 sqDistHist <- aggregate(
     sqDist ~ class,
     sqDist,
     function(x) {
-        h <- hist(x, breaks = breaks, plot = FALSE)
-        ## Drop the last bin (it's just a catch-all):
-        return(h$density[-bins]);
+        h <- hist(x, breaks = breaks, plot = FALSE);
+        ## Normalize the densities to the bin sizes, and accumulate:
+        return(cumsum(h$density * diff(breaks)));
     },
     simplify = FALSE);
 ## This just passes dummy data to get the midpoints:
-mids <- hist(breaks, breaks = breaks, plot = FALSE)$mids[-bins]
-h <- apply(sqDistHist,
-   1,
-   function(df) data.frame(
-                    hist = df$sqDist,
-                    class = df$class,
-                    bins = mids));
-do.call(rbind, h);
+mids <- hist(breaks, breaks = breaks, plot = FALSE)$mids;
+dtmp <- apply(
+    sqDistHist, 1,
+    function(df) data.frame(
+                     ## Drop the last bin (it's just a catch-all and
+                     ## distorts axes):
+                     hist = df$sqDist[-bins],
+                     class = df$class,
+                     bins = mids[-bins]));
+distFlat <- do.call(rbind, dtmp);
+
+ggplot(data = distFlat,
+       aes(x=bins, y=hist, group=factor(class))) +
+    geom_line(aes(colour=factor(class))) +
+    xlab("Distance to cluster center") +
+    ylab("Frequency") +
+    ggtitle("Distance distribution in each cluster")
 
 ## Average the labels (as binary vectors) across each class:
 labelsAvg <- aggregate(. ~ class, labels, mean);

@@ -7,6 +7,8 @@
 ## Assignment 3, Unsupervised Learning (2016-04-03)
 ###########################################################################
 
+library(doParallel);
+registerDoParallel(4);
 library(ggplot2);
 library(RSNNS);
 library(mclust);
@@ -184,11 +186,31 @@ ggplot(data=contribStacked,
     xlab("Principal component");
 
 ## Reduce the dimensions in PCA:
-dims <- 5;
-faultsPca <- faultsNorm * pca$rotation[,1:dims];
-clusters <- kmeans(faultsPca, 20, 100);
+dims <- 27;
+pcaMtx <- pca$rotation[,1:dims];
+faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
+clusters <- kmeans(faultsPca, 7, 100);
 labelsAvg <- clusterPredictErr(clusters, labels);
 sum(labelsAvg$err) / nrow(labels);
 
-## Next question: Why is the error rate on this so high, even if I use
-## all 27 dimensions of PCA?
+dimRange <- 1:27;
+kRange <- 2:80;
+iters <- 100;
+runs <- 50;
+t <- system.time(
+    faultsPcaSurface <-
+        foreach(dims=dimRange, .combine='cbind') %:%
+        foreach(k=kRange, .combine='c') %dopar% {
+            pcaMtx <- pca$rotation[,1:dims];
+            faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
+            clusters <- kmeans(faultsPca, k, iters, runs);
+            labelsAvg <- clusterPredictErr(clusters, labels);
+            return(sum(labelsAvg$err) / nrow(labels));
+        })
+println(t);
+rownames(faultsPcaSurface) <- kRange;
+colnames(faultsPcaSurface) <- dimRange;
+save(faultsPcaSurface, file = "faultsPcaSurface.Rda");
+persp(faultsPcaSurface, theta = 110, phi = 20, shade=0.6, col="red",
+      xlab = "Clusters (k)", ylab = "# of principals",
+      zlab = "Error rate");

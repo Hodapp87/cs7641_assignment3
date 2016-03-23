@@ -51,24 +51,26 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
                        "XedgeXY", "Yedge", "YedgeYX");
 ## https://archive.ics.uci.edu/ml/datasets/Letter+Recognition
 
+labels <- faults[depCol];
+
 ###########################################################################
 ## k-means
 ###########################################################################
 
-## Given clusters produced with 'kmeans' and the corresponding data
-## used to generate them, return a cumulative histogram giving the
-## probability that a point of that cluster is at that distance, or
-## less.  This will be a 'stacked' histogram - the data frame will
-## have column 'class' which gives the class's index as an integer,
-## column 'hist' which contains the cumulative probability, and column
-## 'bins' which gives the midpoint of the respective bin for that
-## probability.
-distHistogram <- function(clusters, data) {
+## Given clusters produced with 'kmeans', any number of instances, and
+## a corresponding list of cluster indices for each instance, return a
+## cumulative histogram giving the probability that a point of that
+## cluster is at that distance, or less.  This will be a 'stacked'
+## histogram - the data frame will have column 'class' which gives the
+## class's index as an integer, column 'hist' which contains the
+## cumulative probability, and column 'bins' which gives the midpoint
+## of the respective bin for that probability.
+distHistogram <- function(clusters, data, idxs) {
     ## Compute squared distance from each instance to the cluster that
     ## 'owns' it:
     sqDist <- data.frame(
-        sqDist = rowSums((clusters$center[clusters$cluster,] - data)^2),
-        class = clusters$cluster);
+        sqDist = rowSums(sqrt((clusters$center[idxs,] - data)^2)),
+        class = idxs);
     sqDistSum <- aggregate(sqDist ~ class, sqDist, sum);
     bins <- 500;
     ## In 'breaks' we must include the max(...) or otherwise 'hist'
@@ -134,23 +136,54 @@ clusterPredictErr <- function(clusters, labels) {
     return(labelsAvg);
 }
 
-clusters <- kmeans(faultsNorm, 20, 100);
+clusters <- kmeans(faultsNorm, 30, 100, 20);
+heatmap(as.matrix(
+    dist(clusters$centers, upper = TRUE, diag = TRUE)));
 
-labels <- faults[depCol];
-
-clustersHist <- distHistogram(clusters, faultsNorm);
-
+clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
 ggplot(data=clustersHist,
        aes(x=bins, y=hist, group=factor(class))) +
     geom_line(aes(colour=factor(class))) +
     xlab("Distance to cluster center") +
-    ylab("Frequency") +
+    ylab("Cumulative probability") +
     ggtitle("Distance distribution in each cluster")
+
+## Generate n*n rows, one for each cluster paired with each cluster.
+n <- nrow(clusters$centers);
+clusterToEach <- clusters$centers[rep(1:n, times=n),];
+centersHist <- distHistogram(clusters, clusterToEach, rep(1:n, each=n));
+ggplot(data=centersHist,
+       aes(x=bins, y=hist, group=factor(class))) +
+    geom_line(aes(colour=factor(class))) +
+    xlab("Distance to cluster center") +
+    ylab("Cumulative probability") +
+    ggtitle("Distance between clusters")
+## This doesn't really look very good...
 
 labelsAvg <- clusterPredictErr(clusters, labels);
 
 ## This then gives one metric of error:
 sum(labelsAvg$err) / nrow(labels);
+
+ks <- 1:100;
+clusterSs <- foreach(k = ks, .combine='rbind') %dopar% {
+    clusters <- kmeans(faultsNorm, k, 100, 20);
+    return(data.frame(k = k,
+                      totss = clusters$totss,
+                      tot.withinss = clusters$tot.withinss,
+                      betweenss = clusters$betweenss));
+}
+
+ggplot(data=clusterSs,
+       aes(x=k, y=tot.withinss)) +
+    geom_line()
+## Well, that's not very useful...
+
+###########################################################################
+## EM
+###########################################################################
+mc <- Mclust(faultsNorm, 50);
+summary(mc);
 
 ###########################################################################
 ## PCA
@@ -194,9 +227,9 @@ labelsAvg <- clusterPredictErr(clusters, labels);
 sum(labelsAvg$err) / nrow(labels);
 
 dimRange <- 1:27;
-kRange <- 2:80;
-iters <- 100;
-runs <- 50;
+kRange <- 2:50;
+iters <- 200;
+runs <- 100;
 t <- system.time(
     faultsPcaSurface <-
         foreach(dims=dimRange, .combine='cbind') %:%
@@ -207,10 +240,38 @@ t <- system.time(
             labelsAvg <- clusterPredictErr(clusters, labels);
             return(sum(labelsAvg$err) / nrow(labels));
         })
-println(t);
+print(t);
 rownames(faultsPcaSurface) <- kRange;
 colnames(faultsPcaSurface) <- dimRange;
+
 save(faultsPcaSurface, file = "faultsPcaSurface.Rda");
 persp(faultsPcaSurface, theta = 110, phi = 20, shade=0.6, col="red",
       xlab = "Clusters (k)", ylab = "# of principals",
       zlab = "Error rate");
+
+## faultsPcaDf <- stack(data.frame(t(faultsPcaSurface)));
+## faultsPcaDf$pcaDims <- dimRange;
+## ggplot(data=faultsPcaDf,
+##       aes(x=pcaDims, y=values, group=ind)) +
+##    geom_line(aes(colour=ind)) +
+##    xlab("Principal component");
+
+ks <- 1:20;
+dimRange <- 15:27;
+iters <- 50;
+runs <- 20;
+clusterSs <- foreach(k = ks, .combine='rbind') %:%
+    foreach(dims=dimRange, .combine='rbind') %dopar% {
+        pcaMtx <- pca$rotation[,1:dims];
+        faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
+        clusters <- kmeans(faultsPca, k, iters, runs);
+        return(data.frame(k = k,
+                          dims = dims,
+                          totss = clusters$totss,
+                          tot.withinss = clusters$tot.withinss,
+                          betweenss = clusters$betweenss));
+}
+
+ggplot(data=clusterSs,
+       aes(x=k, y=tot.withinss, group=factor(dims))) +
+    geom_line(aes(colour=factor(dims)));

@@ -1,3 +1,3 @@
 #!/usr/bin/env Rscript
 
-install.packages(c("ggplot2","RSNNS"));
+install.packages(c("ggplot2","RSNNS","mclust","doParallel"));

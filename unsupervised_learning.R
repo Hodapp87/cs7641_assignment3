@@ -53,69 +53,100 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
 ## k-means
 ###########################################################################
 
-clusters <- kmeans(faultsNorm, 7, 100);
+## Given clusters produced with 'kmeans' and the corresponding data
+## used to generate them, return a cumulative histogram giving the
+## probability that a point of that cluster is at that distance, or
+## less.  This will be a 'stacked' histogram - the data frame will
+## have column 'class' which gives the class's index as an integer,
+## column 'hist' which contains the cumulative probability, and column
+## 'bins' which gives the midpoint of the respective bin for that
+## probability.
+distHistogram <- function(clusters, data) {
+    ## Compute squared distance from each instance to the cluster that
+    ## 'owns' it:
+    sqDist <- data.frame(
+        sqDist = rowSums((clusters$center[clusters$cluster,] - data)^2),
+        class = clusters$cluster);
+    sqDistSum <- aggregate(sqDist ~ class, sqDist, sum);
+    bins <- 500;
+    ## In 'breaks' we must include the max(...) or otherwise 'hist'
+    ## won't complete, as values will fall outside the bins.  We set
+    ## the rest to 2*mean because that seems (empirically) to be a
+    ## useful range, and then remove the final bin at the end because
+    ## it distorts the axis.
+    breaks <- c(seq(0,
+                    mean(sqDist$sqDist) * 2,
+                    length=bins),
+                max(sqDist$sqDist));
 
-## Get just the labels, and put the classes alongside:
+    sqDistHist <- aggregate(
+        sqDist ~ class,
+        sqDist,
+        function(x) {
+            h <- hist(x, breaks = breaks, plot = FALSE);
+            ## Normalize the densities to the bin sizes, and accumulate:
+            return(cumsum(h$density * diff(breaks)));
+        },
+        simplify = FALSE);
+    ## This just passes dummy data to get the midpoints:
+    mids <- hist(breaks, breaks = breaks, plot = FALSE)$mids;
+    dtmp <- apply(
+        sqDistHist, 1,
+        function(df) data.frame(
+                         ## Drop the last bin (it's just a catch-all
+                         ## and distorts axes):
+                         hist = df$sqDist[-bins],
+                         class = df$class,
+                         bins = mids[-bins]));
+    distFlat <- do.call(rbind, dtmp);
+    return(distFlat);
+}
+
+## Given clusters produced by 'kmeans' and a set of labels
+## corresponding to the data used to generate the clusters, perform
+## some prediction by treating each cluster as producing the average
+## of the labels that are in it.  This returns a data frame with a
+## column 'class' for the class index, 'argmax' for a factor that
+## corresponds to the identified label (the argmax of that average),
+## 'errRate' for a ratio of incorrect labels in that cluster, 'err'
+## for an actual number of incorrectly-labeled instances, and 'size'
+## for the size of the cluster.
+clusterPredictErr <- function(clusters, labels) {
+    cols <- colnames(labels);
+    ## Put classes alongside labels so we can aggregate:
+    labels$class <- clusters$cluster;
+    ## Average the labels (as binary vectors) across each class:
+    labelsAvg <- aggregate(. ~ class, labels, mean);
+    ## Set 'argmax' to the factor that has the highest average: (sort
+    ## of like we did with the neural networks)
+    labelsAvg$argmax <- factor(apply(labelsAvg[cols], 1, which.max),
+                               labels = cols, levels = 1:length(cols));
+    ## Set 'errRate' to the sum of other factors (these are all
+    ## "wrong" if we use the highest factor):
+    labelsAvg$errRate <- apply(
+        labelsAvg[depCol], 1, function(x) (1 - max(x)));
+    ## Then set 'err' to that multiplied by the cluster size to tell
+    ## us error as a number of instances, not as a rate:
+    labelsAvg$size <- clusters$size[labelsAvg$class];
+    labelsAvg$err <- labelsAvg$errRate * labelsAvg$size;
+    return(labelsAvg);
+}
+
+clusters <- kmeans(faultsNorm, 20, 100);
+
 labels <- faults[depCol];
-labels$class <- clusters$cluster;
 
-## Compute squared distance from each instance to the cluster that
-## 'owns' it:
-sqDist <- data.frame(
-    sqDist = rowSums((clusters$center[labels$class,] - faultsNorm)^2),
-    class = clusters$cluster);
-sqDistSum <- aggregate(sqDist ~ class, sqDist, sum);
-bins <- 500;
-## In 'breaks' we must include the max(...) or otherwise 'hist' won't
-## complete, as values will fall outside the bins.  We set the rest to
-## 2*mean because that seems (empirically) to be a useful range, and
-## then remove the final bin at the end because it distorts the axis.
-breaks <- c(seq(0,
-                mean(sqDist$sqDist) * 2,
-                length=bins),
-            max(sqDist$sqDist));
-sqDistHist <- aggregate(
-    sqDist ~ class,
-    sqDist,
-    function(x) {
-        h <- hist(x, breaks = breaks, plot = FALSE);
-        ## Normalize the densities to the bin sizes, and accumulate:
-        return(cumsum(h$density * diff(breaks)));
-    },
-    simplify = FALSE);
-## This just passes dummy data to get the midpoints:
-mids <- hist(breaks, breaks = breaks, plot = FALSE)$mids;
-dtmp <- apply(
-    sqDistHist, 1,
-    function(df) data.frame(
-                     ## Drop the last bin (it's just a catch-all and
-                     ## distorts axes):
-                     hist = df$sqDist[-bins],
-                     class = df$class,
-                     bins = mids[-bins]));
-distFlat <- do.call(rbind, dtmp);
+clustersHist <- distHistogram(clusters, faultsNorm);
 
-ggplot(data=distFlat,
+ggplot(data=clustersHist,
        aes(x=bins, y=hist, group=factor(class))) +
     geom_line(aes(colour=factor(class))) +
     xlab("Distance to cluster center") +
     ylab("Frequency") +
     ggtitle("Distance distribution in each cluster")
 
-## Average the labels (as binary vectors) across each class:
-labelsAvg <- aggregate(. ~ class, labels, mean);
-## Set 'argmax' to the factor that has the highest average:
-## (sort of like we did with the neural networks)
-labelsAvg$argmax <- factor(apply(labelsAvg[depCol], 1, which.max),
-                           labels = depCol, levels = 1:length(depCol));
-## Set 'errRate' to the sum of other factors (these are all "wrong" if
-## we use the highest factor):
-labelsAvg$errRate <- apply(
-    labelsAvg[depCol], 1, function(x) (1 - max(x)));
-## Then set 'err' to that multiplied by the cluster size to tell us
-## error as a number of instances, not as a rate:
-labelsAvg$size <- clusters$size[labelsAvg$class];
-labelsAvg$err <- labelsAvg$errRate * labelsAvg$size;
+labelsAvg <- clusterPredictErr(clusters, labels);
+
 ## This then gives one metric of error:
 sum(labelsAvg$err) / nrow(labels);
 
@@ -150,5 +181,14 @@ contribStacked$ind <- strtoi(substring(contribStacked$ind, 2));
 ggplot(data=contribStacked,
        aes(x=ind, y=values, group=feature)) +
     geom_line(aes(colour=feature)) +
-    xlab("Principal component")
-## Problem: Column 'ind' is not numerical, and it is sorting wrong.
+    xlab("Principal component");
+
+## Reduce the dimensions in PCA:
+dims <- 5;
+faultsPca <- faultsNorm * pca$rotation[,1:dims];
+clusters <- kmeans(faultsPca, 20, 100);
+labelsAvg <- clusterPredictErr(clusters, labels);
+sum(labelsAvg$err) / nrow(labels);
+
+## Next question: Why is the error rate on this so high, even if I use
+## all 27 dimensions of PCA?

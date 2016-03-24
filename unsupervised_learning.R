@@ -12,6 +12,9 @@ registerDoParallel(4);
 library(ggplot2);
 library(RSNNS);
 library(mclust);
+library(fastICA);
+
+source("multiplot.R");
 
 ###########################################################################
 ## Data Loading & Other Boilerplate
@@ -50,6 +53,8 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
                        "XYbar", "X2Ybar", "XY2bar", "Xedge",
                        "XedgeXY", "Yedge", "YedgeYX");
 ## https://archive.ics.uci.edu/ml/datasets/Letter+Recognition
+lettersNorm <- data.frame(
+    scale(letters[-which(names(letters) == "Letter")]));
 
 labels <- faults[depCol];
 
@@ -136,6 +141,55 @@ clusterPredictErr <- function(clusters, labels) {
     return(labelsAvg);
 }
 
+## Get data for the within-cluster sum-of-squared error, across
+## different k, for both datasets.
+local({
+    fname <- "clusterWithinSs.Rda";
+    ks <- 2:100;
+    iters <- 100;
+    runs <- 50;
+    runtime <- system.time(
+        clusterWithinSs <- foreach(k = ks, .combine='rbind') %dopar% {
+            cat(k);
+            cat("..");
+            fc <- kmeans(faultsNorm,  k, iters, runs);
+            lc <- kmeans(lettersNorm, k, iters, runs);
+            return(data.frame(
+                k = k,
+                faultsWithinSs  = fc$tot.withinss / nrow(faultsNorm),
+                lettersWithinSs = lc$tot.withinss / nrow(lettersNorm)));
+        }
+    )
+    print(runtime);
+    title <- sprintf("k-means, %d iters, %d runs",
+                     iters, runs);
+    xlab <- "k (number of clusters)";
+    ylab <- "Average squared error";
+    save(clusterWithinSs, title, xlab, ylab, runtime, file=fname);
+})
+
+p1 <- ggplot(data=faultClusterSs,
+             aes(x=k, y=tot.withinss)) +
+    geom_line()
+## Well, that's not very useful...
+
+ks <- 1:200;
+clusterSs <- foreach(k = ks, .combine='rbind') %dopar% {
+    clusters <- kmeans(lettersNorm, k, 100, 20);
+    return(data.frame(k = k,
+                      totss = clusters$totss,
+                      tot.withinss = clusters$tot.withinss,
+                      betweenss = clusters$betweenss));
+}
+
+p2 <- ggplot(data=clusterSs,
+             aes(x=k, y=tot.withinss)) +
+    geom_line()
+multiplot(p1, p2, cols=2)
+
+    
+);
+
 clusters <- kmeans(faultsNorm, 30, 100, 20);
 heatmap(as.matrix(
     dist(clusters$centers, upper = TRUE, diag = TRUE)));
@@ -165,20 +219,6 @@ labelsAvg <- clusterPredictErr(clusters, labels);
 ## This then gives one metric of error:
 sum(labelsAvg$err) / nrow(labels);
 
-ks <- 1:100;
-clusterSs <- foreach(k = ks, .combine='rbind') %dopar% {
-    clusters <- kmeans(faultsNorm, k, 100, 20);
-    return(data.frame(k = k,
-                      totss = clusters$totss,
-                      tot.withinss = clusters$tot.withinss,
-                      betweenss = clusters$betweenss));
-}
-
-ggplot(data=clusterSs,
-       aes(x=k, y=tot.withinss)) +
-    geom_line()
-## Well, that's not very useful...
-
 ###########################################################################
 ## EM
 ###########################################################################
@@ -188,7 +228,38 @@ summary(mc);
 ###########################################################################
 ## PCA
 ###########################################################################
+
+## Given a PCA loading matrix and some (compatible) data, compute the
+## reconstruction error from using just the 1st principal, the first 2
+## principals, first 3, etc. If loading matrix has dimensions PxL,
+## then data must have dimensions NxP.
+reconstrError <- function(mtx, data) {
+    foreach(dims=1:nrow(mtx), .combine='c') %dopar% {
+        mtxR <- as.matrix(mtx[,1:dims]);
+        scores <- as.matrix(data) %*% mtxR
+        reconstr <- scores %*% t(mtxR)
+        return(sum((data - reconstr)^2));
+    }
+}
+
+lettersPca <- prcomp(lettersNorm);
+pcaErrPlot <- data.frame(
+    dims = 1:nrow(lettersPca$rotation),
+    err = reconstrError(lettersPca$rotation, lettersNorm)
+);
+ggplot(data=pcaErrPlot,
+       aes(x = dims, y = err)) +
+    geom_line()
+
+
 pca <- prcomp(faultsNorm);
+pcaErrPlot <- data.frame(
+    dims = 1:nrow(pca$rotation),
+    err = reconstrError(pca$rotation, faultsNorm)
+);
+ggplot(data=pcaErrPlot,
+       aes(x = dims, y = err)) +
+    geom_line()
 
 pcaPlot <- data.frame(pcaStdev = pca$sdev,
                       pcaDim = 1:ncol(faultsNorm));

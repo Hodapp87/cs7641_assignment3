@@ -221,18 +221,6 @@ ggplot(data=clustersHist,
     ylab("Cumulative probability") +
     ggtitle("Distance distribution in each cluster")
 
-## Generate n*n rows, one for each cluster paired with each cluster.
-n <- nrow(clusters$centers);
-clusterToEach <- clusters$centers[rep(1:n, times=n),];
-centersHist <- distHistogram(clusters, clusterToEach, rep(1:n, each=n));
-ggplot(data=centersHist,
-       aes(x=bins, y=hist, group=factor(class))) +
-    geom_line(aes(colour=factor(class))) +
-    xlab("Distance to cluster center") +
-    ylab("Cumulative probability") +
-    ggtitle("Distance between clusters")
-## This doesn't really look very good...
-
 labelsAvg <- clusterPredictErr(clusters, labels);
 
 ## This then gives one metric of error:
@@ -241,8 +229,30 @@ sum(labelsAvg$err) / nrow(labels);
 ###########################################################################
 ## EM
 ###########################################################################
-mc <- Mclust(faultsNorm, 50);
-summary(mc);
+
+## Build Mclust models for each dataset.  This will be time-consuming.
+local({
+    fname <- "emClusters.Rda";
+    faultsMcTime <- system.time(
+        faultsMc <- Mclust(faultsNorm, 2:500)
+    );
+    lettersMcTime <- system.time(
+        lettersMc <- Mclust(lettersNorm, 2:500)
+    );
+    faultsBic <- data.frame(
+        bic = faultsMc$BIC[,"EII"],
+        numClusters = strtoi(names(faultsMc$BIC[,"EII"])),
+        test = "Steel faults")
+    lettersBic <- data.frame(
+        bic = lettersMc$BIC[,"EII"],
+        numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
+        test = "Letters")
+    bic <- rbind(faultsBic, lettersBic);
+    xlab <- "Number of clusters";
+    ylab <- "Bayesian Information Criterion value";
+    save(faultsMc, lettersMc, faultsMcTime, lettersMcTime, xlab, ylab, bic,
+         file = fname);
+});
 
 ###########################################################################
 ## PCA
@@ -286,7 +296,7 @@ local({
 
 ## Now, this might give some notion of the contribution of each
 ## original component up to the indication principal:
-contrib <- apply(pca$rotation^2, 1, cumsum);
+contrib <- apply(faultsPca$rotation^2, 1, cumsum);
 ## (That is, row 'i' stands for the i'th principal component and
 ## column 'j' for the j'th feature, and the value at (i,j) is how much
 ## feature 'j' has contributed to the first 'i' principals.)
@@ -362,3 +372,47 @@ clusterSs <- foreach(k = ks, .combine='rbind') %:%
 ggplot(data=clusterSs,
        aes(x=k, y=tot.withinss, group=factor(dims))) +
     geom_line(aes(colour=factor(dims)));
+
+###########################################################################
+## fastICA
+###########################################################################
+
+## Given some data input (assumed to already be standardized) and a
+## range of dimensions, perform ICA to the given range of dimensions,
+## and return reconstruction error (sum of squared error,
+## particularly) as a data frame with columns "dims" for number of
+## dimensions and "err" for reconstruction error.
+icaReconstrError <- function(data, dimRange) {
+    foreach(dims = dimRange, .combine = "rbind") %dopar% {
+        ica <- fastICA(data, dims);
+        A <- as.matrix(ica$A);
+        S <- as.matrix(ica$S);
+        return(data.frame(
+            dims = dims,
+            err = sum(((S %*% A) - data)^2)));
+    };
+}
+
+faultsIca <- foreach(dims=2:26) %dopar% fastICA(faultsNorm, dims)
+lettersIca <- foreach(dims=2:16) %dopar% fastICA(lettersNorm, dims)
+## But how do I get dimensions into here?
+
+local({
+    fname <- "icaReconstrError.Rda";
+    faultsIcaTime <- system.time(
+        faultsIcaErr <- icaReconstrError(faultsNorm, 1:26)
+    );
+    faultsIcaErr$err = faultsIcaErr$err / nrow(faultsNorm);
+    faultsIcaErr$test = "Steel faults";
+    lettersIcaTime <- system.time(
+        lettersIcaErr <- icaReconstrError(lettersNorm, 1:16)
+    );
+    lettersIcaErr$err = lettersIcaErr$err / nrow(lettersNorm);
+    lettersIcaErr$test = "Letters";
+    icaReconstrErr <- rbind(faultsIcaErr, lettersIcaErr);
+    title <- "ICA reconstruction error";
+    xlab <- "Dimensions";
+    ylab <- "Average reconstruction error";
+    save(icaReconstrErr, faultsIcaTime, lettersIcaTime, xlab, ylab, title,
+         file = fname);
+});

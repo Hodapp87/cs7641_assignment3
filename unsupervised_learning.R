@@ -284,31 +284,6 @@ local({
     save(pcaReconstrErr, title, xlab, ylab, file=fname);
 });
 
-pcaErrPlot <- data.frame(
-    dims = 1:nrow(lettersPca$rotation),
-    err = 
-);
-ggplot(data=pcaErrPlot,
-       aes(x = dims, y = err)) +
-    geom_line()
-
-
-pca <- prcomp(faultsNorm);
-pcaErrPlot <- data.frame(
-    dims = 1:nrow(pca$rotation),
-    err = reconstrError(pca$rotation, faultsNorm)
-);
-ggplot(data=pcaErrPlot,
-       aes(x = dims, y = err)) +
-    geom_line()
-
-pcaPlot <- data.frame(pcaStdev = pca$sdev,
-                      pcaDim = 1:ncol(faultsNorm));
-ggplot(data=pcaPlot,
-       aes(x=pcaDim, y=pcaStdev)) +
-    geom_line()
-## biplot(pca, pc.biplot = TRUE, scale = 0.8);
-
 ## Now, this might give some notion of the contribution of each
 ## original component up to the indication principal:
 contrib <- apply(pca$rotation^2, 1, cumsum);

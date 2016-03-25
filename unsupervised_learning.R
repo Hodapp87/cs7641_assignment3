@@ -12,6 +12,7 @@ registerDoParallel(4);
 library(ggplot2);
 library(RSNNS);
 library(mclust);
+library(cluster);
 library(fastICA);
 
 source("multiplot.R");
@@ -141,58 +142,76 @@ clusterPredictErr <- function(clusters, labels) {
     return(labelsAvg);
 }
 
-## Get data for the within-cluster sum-of-squared error, across
-## different k, for both datasets.
+## Generate dissimilarity matrices for steel faults:
+tryCatch(
+    faultsDissim <- local({
+        load("faultsDissim.Rda");
+        return(faultsDissim);
+    }),
+    error = function(w) {
+        faultsDissim <- daisy(faultsNorm);
+        save(faultsDissim, file="faultsDissim.Rda");
+    });
+## and likewise for letters (this will generate about 1.4 GB, beware):
+tryCatch(
+    lettersDissim <- local({
+        load("lettersDissim.Rda");
+        return(lettersDissim);
+    }),
+    error = function(w) {
+        lettersDissim <- daisy(lettersNorm);
+        save(lettersDissim, file="lettersDissim.Rda");
+    });
+
+
+## For both datasets, across a range of k, get within-cluster
+## sum-of-squared error and average silhouette value.
 local({
-    fname <- "clusterWithinSs.Rda";
-    ks <- 2:100;
+    fname <- "kmeansClusters.Rda";
+    ks <- 2:200;
     iters <- 100;
     runs <- 50;
     runtime <- system.time(
-        clusterWithinSs <- foreach(k = ks, .combine='rbind') %dopar% {
+        kmeansClusters <- foreach(k = ks, .combine='rbind') %dopar% {
             cat(k);
             cat("..");
             fc <- kmeans(faultsNorm,  k, iters, runs);
             lc <- kmeans(lettersNorm, k, iters, runs);
+            fcSk <- silhouette(fc$cl, faultsDissim);
+            lcSk <- silhouette(lc$cl, lettersDissim);
             return(data.frame(
                 k = k,
-                faultsWithinSs  = fc$tot.withinss / nrow(faultsNorm),
-                lettersWithinSs = lc$tot.withinss / nrow(lettersNorm)));
+                avgS = c(summary(fcSk)$avg.width,
+                         summary(lcSk)$avg.width),
+                withinSs = c(fc$tot.withinss / nrow(faultsNorm),
+                             lc$tot.withinss / nrow(lettersNorm)),
+                test = c("Steel faults", "Letters"))
+                )
         }
     )
     print(runtime);
     title <- sprintf("k-means, %d iters, %d runs",
                      iters, runs);
     xlab <- "k (number of clusters)";
-    ylab <- "Average squared error";
-    save(clusterWithinSs, title, xlab, ylab, runtime, file=fname);
-})
+    save(kmeansClusters, title, xlab, ylab, ks, iters, runs, runtime,
+         file=fname);
+});
 
-p1 <- ggplot(data=faultClusterSs,
-             aes(x=k, y=tot.withinss)) +
-    geom_line()
-## Well, that's not very useful...
+## Produce a silhouette object to use elsewhere in plots:
+local({
+    fname <- "kmeansSilhouettes.Rda";
+    kFaults <- 13;
+    iters <- 100;
+    runs <- 50;
+    clusters <- kmeans(faultsNorm, kFaults, iters, runs);
+    skFaults <- silhouette(clusters$cl, faultsDissim);
+    titleFaults <- sprintf(
+        "Steel faults, silhouette plot (k-means, k=%d, %d iters, %d runs)",
+        kFaults, iters, runs);
+    save(kFaults, skFaults, titleFaults, iters, runs, file=fname);
+});
 
-ks <- 1:200;
-clusterSs <- foreach(k = ks, .combine='rbind') %dopar% {
-    clusters <- kmeans(lettersNorm, k, 100, 20);
-    return(data.frame(k = k,
-                      totss = clusters$totss,
-                      tot.withinss = clusters$tot.withinss,
-                      betweenss = clusters$betweenss));
-}
-
-p2 <- ggplot(data=clusterSs,
-             aes(x=k, y=tot.withinss)) +
-    geom_line()
-multiplot(p1, p2, cols=2)
-
-    
-);
-
-clusters <- kmeans(faultsNorm, 30, 100, 20);
-heatmap(as.matrix(
-    dist(clusters$centers, upper = TRUE, diag = TRUE)));
+dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
 
 clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
 ggplot(data=clustersHist,
@@ -229,6 +248,9 @@ summary(mc);
 ## PCA
 ###########################################################################
 
+faultsPca <- prcomp(faultsNorm);
+lettersPca <- prcomp(lettersNorm);
+
 ## Given a PCA loading matrix and some (compatible) data, compute the
 ## reconstruction error from using just the 1st principal, the first 2
 ## principals, first 3, etc. If loading matrix has dimensions PxL,
@@ -242,10 +264,29 @@ reconstrError <- function(mtx, data) {
     }
 }
 
-lettersPca <- prcomp(lettersNorm);
+## This might need redone later to compare other reduction techniques
+local({
+    fname <- "pcaReconstrError.Rda";
+    faultsMtx <- faultsPca$rotation;
+    lettersMtx <- lettersPca$rotation;
+    faultsPcaErr <- data.frame(
+        dims = 1:nrow(faultsMtx),
+        err = reconstrError(faultsMtx, faultsNorm) / nrow(faultsNorm),
+        test = "Steel faults");
+    lettersPcaErr <- data.frame(
+        dims = 1:nrow(lettersPca$rotation),
+        err = reconstrError(lettersMtx, lettersNorm) / nrow(lettersNorm),
+        test = "Letters");
+    pcaReconstrErr <- rbind(faultsPcaErr, lettersPcaErr);
+    title <- "PCA reconstruction error";
+    xlab <- "Dimensions";
+    ylab <- "Average reconstruction error";
+    save(pcaReconstrErr, title, xlab, ylab, file=fname);
+});
+
 pcaErrPlot <- data.frame(
     dims = 1:nrow(lettersPca$rotation),
-    err = reconstrError(lettersPca$rotation, lettersNorm)
+    err = 
 );
 ggplot(data=pcaErrPlot,
        aes(x = dims, y = err)) +

@@ -14,6 +14,7 @@ library(RSNNS);
 library(mclust);
 library(cluster);
 library(fastICA);
+library(RPEnsemble);
 
 source("multiplot.R");
 
@@ -260,6 +261,7 @@ local({
 
 faultsPca <- prcomp(faultsNorm);
 lettersPca <- prcomp(lettersNorm);
+save(faultsPca, lettersPca, file="pca.Rda");
 
 ## Given a PCA loading matrix and some (compatible) data, compute the
 ## reconstruction error from using just the 1st principal, the first 2
@@ -272,6 +274,17 @@ reconstrError <- function(mtx, data) {
         reconstr <- scores %*% t(mtxR)
         return(sum((data - reconstr)^2));
     }
+}
+
+## Given an object of class "prcomp" and a proportion of energy
+## (default 0.90) to preserve of the total variance, returns the total
+## number of dimensions required to preserve that amount of energy.
+minDimension <- function(pca, energy = 0.90) {
+    ## Find the lower limit of the variance:
+    limit <- sum(pca$sdev^2) * energy;
+    ## Figure out which indices *exceed* this:
+    return(min(which(cumsum(pca$sdev^2) > limit)));
+    ## Those are numbered from 1, so minimum is then all that we need.
 }
 
 ## This might need redone later to compare other reduction techniques
@@ -439,9 +452,11 @@ rcaReconstrError <- function(data, dimRange, runs) {
     foreach(dims=dimRange, .combine = "rbind") %:%
     foreach(run=1:runs, .combine='rbind') %dopar% {
         ## I'm not sure how kosher the below math is.
-        projMtx <- randn(ncol(data), dims);
+        ## projMtx <- randn(ncol(data), dims);
+        ## reconstr <- projData %*% pinv(projMtx);
+        projMtx <- RPGenerate(ncol(data), dims);
         projData <- as.matrix(data) %*% projMtx;
-        reconstr <- projData %*% pinv(projMtx);
+        reconstr <- projData %*% t(projMtx);
         return(data.frame(
             dims = dims,
             run = run,
@@ -452,7 +467,7 @@ rcaReconstrError <- function(data, dimRange, runs) {
 
 local({
     fname <- "rcaReconstrError.Rda";
-    runs <- 500;
+    runs <- 5000;
     faultsRcaTime <- system.time(
         faultsRcaErr <- rcaReconstrError(faultsNorm, 2:26, runs)
     );

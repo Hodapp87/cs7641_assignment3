@@ -211,15 +211,15 @@ local({
     save(kFaults, skFaults, titleFaults, iters, runs, file=fname);
 });
 
-dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
-
-clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
-ggplot(data=clustersHist,
-       aes(x=bins, y=hist, group=factor(class))) +
-    geom_line(aes(colour=factor(class))) +
-    xlab("Distance to cluster center") +
-    ylab("Cumulative probability") +
-    ggtitle("Distance distribution in each cluster")
+## Works, but plots aren't particularly useful:
+## dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
+## clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
+## ggplot(data=clustersHist,
+##        aes(x=bins, y=hist, group=factor(class))) +
+##     geom_line(aes(colour=factor(class))) +
+##     xlab("Distance to cluster center") +
+##     ylab("Cumulative probability") +
+##     ggtitle("Distance distribution in each cluster")
 
 labelsAvg <- clusterPredictErr(clusters, labels);
 
@@ -378,8 +378,8 @@ ggplot(data=clusterSs,
 ###########################################################################
 
 ## Given some data input (assumed to already be standardized) and a
-## range of dimensions, perform ICA to the given range of dimensions,
-## and return reconstruction error (sum of squared error,
+## range of dimensions, performs ICA to the given range of dimensions,
+## and returns reconstruction error (sum of squared error,
 ## particularly) as a data frame with columns "dims" for number of
 ## dimensions and "err" for reconstruction error.
 icaReconstrError <- function(data, dimRange) {
@@ -415,4 +415,58 @@ local({
     ylab <- "Average reconstruction error";
     save(icaReconstrErr, faultsIcaTime, lettersIcaTime, xlab, ylab, title,
          file = fname);
+});
+
+###########################################################################
+## Random projections
+###########################################################################
+
+## Rough look-alike to the MATLAB function; generate an m x n matrix
+## with normally-distributed values of mean 0 & variance 1.
+randn <- function(m, n) matrix(rnorm(m*n), m, n);
+
+## Compute pseudoinverse with SVD.
+pinv <- function(mtx) {
+    s <- svd(mtx);
+    return(s$v %*% as.matrix(diag(1 / s$d)) %*% t(s$u));
+};
+
+## Computes reconstruction error for some data, dimension range
+## (dimRange), and number of runs.  Returns a data frame with columns
+## "dims" for number of dimensions, "run" for the run number, and
+## "err" for reconstruction error (as sum of squared error).
+rcaReconstrError <- function(data, dimRange, runs) {
+    foreach(dims=dimRange, .combine = "rbind") %:%
+    foreach(run=1:runs, .combine='rbind') %dopar% {
+        ## I'm not sure how kosher the below math is.
+        projMtx <- randn(ncol(data), dims);
+        projData <- as.matrix(data) %*% projMtx;
+        reconstr <- projData %*% pinv(projMtx);
+        return(data.frame(
+            dims = dims,
+            run = run,
+            err = sum((reconstr - data)^2)
+        ));
+    };
+}
+
+local({
+    fname <- "rcaReconstrError.Rda";
+    runs <- 500;
+    faultsRcaTime <- system.time(
+        faultsRcaErr <- rcaReconstrError(faultsNorm, 2:26, runs)
+    );
+    faultsRcaErr$err = faultsRcaErr$err / nrow(faultsNorm);
+    faultsRcaErr$test = "Steel faults";
+    lettersRcaTime <- system.time(
+        lettersRcaErr <- rcaReconstrError(lettersNorm, 2:16, runs)
+    );
+    lettersRcaErr$err = lettersRcaErr$err / nrow(lettersNorm);
+    lettersRcaErr$test = "Letters";
+    rcaReconstrErr <- rbind(faultsRcaErr, lettersRcaErr);
+    title <- "RCA reconstruction error";
+    xlab <- "Dimensions";
+    ylab <- "Average reconstruction error";
+    save(rcaReconstrErr, faultsRcaTime, lettersRcaTime, runs, xlab, ylab,
+         title, file = fname);
 });

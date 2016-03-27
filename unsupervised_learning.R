@@ -44,9 +44,9 @@ depCol <- c("Pastry", "Z_Scratch", "K_Scatch", "Stains",
 ## faults$Fault <- resp;
 ## faults[depCol] <- list(NULL);
 
-## Also standardize the data to mean 0, variance 1, leaving out the
-## labels:
+## Also standardize data to mean 0, variance 1, separating labels:
 faultsNorm <- data.frame(scale(faults[-which(names(faults) %in% depCol)]))
+faultLabels <- faults[depCol];
 
 ## Load data for "Letter Recognition" data set & apply headers:
 letters <- read.table("letter-recognition.data", sep=",", header=FALSE);
@@ -55,10 +55,13 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
                        "XYbar", "X2Ybar", "XY2bar", "Xedge",
                        "XedgeXY", "Yedge", "YedgeYX");
 ## https://archive.ics.uci.edu/ml/datasets/Letter+Recognition
+
+## Standardize this too:
 lettersNorm <- data.frame(
     scale(letters[-which(names(letters) == "Letter")]));
-
-labels <- faults[depCol];
+## And turn 'Letter' into a 26-wide binary matrix (columns A-Z):
+lettersLabels <- model.matrix( ~ 0 + Letter, letters);
+colnames(lettersLabels) <- levels(letters$Letter);
 
 ###########################################################################
 ## k-means
@@ -222,11 +225,6 @@ local({
 ##     ylab("Cumulative probability") +
 ##     ggtitle("Distance distribution in each cluster")
 
-labelsAvg <- clusterPredictErr(clusters, labels);
-
-## This then gives one metric of error:
-sum(labelsAvg$err) / nrow(labels);
-
 ###########################################################################
 ## EM
 ###########################################################################
@@ -313,6 +311,7 @@ contrib <- apply(faultsPca$rotation^2, 1, cumsum);
 ## (That is, row 'i' stands for the i'th principal component and
 ## column 'j' for the j'th feature, and the value at (i,j) is how much
 ## feature 'j' has contributed to the first 'i' principals.)
+rownames(contrib) <- NULL;
 contribStacked <- stack(data.frame(t(contrib)));
 ## We need to know which feature produced each row in this 'stacked'
 ## data frame, so do this with R's recycling behavior:
@@ -333,8 +332,8 @@ dims <- 27;
 pcaMtx <- pca$rotation[,1:dims];
 faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
 clusters <- kmeans(faultsPca, 7, 100);
-labelsAvg <- clusterPredictErr(clusters, labels);
-sum(labelsAvg$err) / nrow(labels);
+labelsAvg <- clusterPredictErr(clusters, faultLabels);
+sum(labelsAvg$err) / nrow(faultLabels);
 
 dimRange <- 1:27;
 kRange <- 2:50;
@@ -347,8 +346,8 @@ t <- system.time(
             pcaMtx <- pca$rotation[,1:dims];
             faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
             clusters <- kmeans(faultsPca, k, iters, runs);
-            labelsAvg <- clusterPredictErr(clusters, labels);
-            return(sum(labelsAvg$err) / nrow(labels));
+            labelsAvg <- clusterPredictErr(clusters, faultLabels);
+            return(sum(labelsAvg$err) / nrow(faultLabels));
         })
 print(t);
 rownames(faultsPcaSurface) <- kRange;
@@ -406,8 +405,8 @@ icaReconstrError <- function(data, dimRange) {
     };
 }
 
-faultsIca <- foreach(dims=2:26) %dopar% fastICA(faultsNorm, dims)
-lettersIca <- foreach(dims=2:16) %dopar% fastICA(lettersNorm, dims)
+faultsIca <- foreach(dims=2:26) %dopar% fastICA(faultsNorm, dims);
+lettersIca <- foreach(dims=2:16) %dopar% fastICA(lettersNorm, dims);
 ## But how do I get dimensions into here?
 
 local({
@@ -484,4 +483,59 @@ local({
     ylab <- "Average reconstruction error";
     save(rcaReconstrErr, faultsRcaTime, lettersRcaTime, runs, xlab, ylab,
          title, file = fname);
+});
+
+###########################################################################
+## Clustering re-projected points
+###########################################################################
+
+local({
+    fname <- "kmeansReducedDims.Rda";
+    iters <- 200;
+    runs <- 100;
+    ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
+
+    ks <- c(15, 45, 135, 405);
+    
+    ## TODO: Add timing information to this!
+    faultsPca <- prcomp(faultsNorm);
+    pcaKmeansReducedF <-
+        foreach(dims=2:27, .combine = "rbind") %dopar% {
+            mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
+            proj <- as.matrix(faultsNorm) %*% mtxR;
+            foreach(k=ks, .combine = "rbind") %do% {
+                clusters <- kmeans(proj, k, iters, runs);
+                labelsAvg <- clusterPredictErr(clusters, faultLabels);
+                data.frame(dims = dims,
+                           k = k,
+                           test = "Steel faults",
+                           algo = "PCA",
+                           err = sum(labelsAvg$err) / nrow(faultLabels));
+            }
+        }
+    
+    dimRange <- 2:26;
+    icaKmeansReducedF <-
+        foreach(dims=dimRange, .combine = "rbind") %dopar% {
+            ica <- fastICA(faultsNorm, dims);
+            A <- as.matrix(ica$A);
+            S <- as.matrix(ica$S);
+            proj <- S %*% A;
+            foreach(k=ks, .combine = "rbind") %do% {
+                clusters <- kmeans(proj, k, iters, runs);
+                labelsAvg <- clusterPredictErr(clusters, faultLabels);
+                data.frame(dims = dims,
+                           k = k,
+                           test = "Steel faults",
+                           algo = "ICA",
+                           err = sum(labelsAvg$err) / nrow(faultLabels));
+            }
+        }
+
+    kmeansReducedDims <- rbind(pcaKmeansReducedF,
+                               icaKmeansReducedF);
+    ## TODO: Add 'k' value to this (though that's not present for EM)
+    title <- "Cluster labels on dimension-reduced data";
+    
+    save(kmeansReducedDims, title, file=fname);
 });

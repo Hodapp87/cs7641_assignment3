@@ -19,6 +19,20 @@ library(RPEnsemble);
 source("multiplot.R");
 
 ###########################################################################
+## Functions
+###########################################################################
+
+## Split ratio 'f' for training data, and the rest (1-f) for testing.
+## Returns a list with items "train" and "test" containing rows taken,
+## in random order, from "frame".
+splitTrainingTest <- function(frame, f) {
+    trainIdx <- sample(nrow(frame), size=f*nrow(frame));
+    train <- frame[trainIdx,];
+    test <- frame[-trainIdx,];
+    return(list(train = train, test = test));
+}
+
+###########################################################################
 ## Data Loading & Other Boilerplate
 ###########################################################################
 
@@ -195,7 +209,7 @@ tryCatch(
 ## sum-of-squared error and average silhouette value.
 local({
     fname <- "kmeansClusters.Rda";
-    ks <- 2:200;
+    ks <- 2:300;
     iters <- 100;
     runs <- 50;
     runtime <- system.time(
@@ -242,6 +256,16 @@ local({
     save(kFaults, skFaults, titleFaults, iters, runs, file=fname);
 });
 
+local({
+    fname <- "kmeansConfusionMtx.Rda";
+    kLetters <- 200;
+    iters <- 100;
+    runs <- 50;
+    clusters <- kmeans(lettersNorm, kLetters, iters, runs);
+    lettersConfusion <- clusterConfusionMatrix(clusters, lettersLabels);
+    save(kLetters, iters, runs, lettersConfusion, file=fname);
+});
+
 ## Works, but plots aren't particularly useful:
 ## dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
 ## clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
@@ -268,7 +292,7 @@ local({
     ## going on.
     ## 
     lettersMcTime <- system.time(
-        lettersMc <- Mclust(lettersNorm, 2:25)
+        lettersMc <- Mclust(lettersNorm, 2:50)
     );
     faultsBic <- data.frame(
         bic = faultsMc$BIC[,"EII"],
@@ -530,8 +554,7 @@ clusterLabelErrFrame <- function(data, labels, ks, iters, runs) {
     foreach(k=ks, .combine = "rbind") %do% {
         clusters <- kmeans(data, k, iters, runs);
         labelsAvg <- clusterPredictErr(clusters, labels);
-        data.frame(dims = dims,
-                   k = k,
+        data.frame(k = k,
                    err = sum(labelsAvg$err) / nrow(labels));
     }
 }
@@ -540,9 +563,15 @@ local({
     fname <- "kmeansReducedDims.Rda";
     iters <- 200;
     runs <- 100;
-    ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
 
     ks <- c(15, 45, 135, 405);
+
+    kmeansOrigF <-
+        clusterLabelErrFrame(faultsNorm, faultLabels, ks, iters, runs);
+    kmeansOrigF$test <- "Steel faults";
+    kmeansOrigF$algo <- "None";
+
+    ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
     
     ## TODO: Add timing information to this!
     faultsPca <- prcomp(faultsNorm);
@@ -551,8 +580,10 @@ local({
             mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
             proj <- as.matrix(faultsNorm) %*% mtxR;
             df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df$dims <- dims;
             df$test <- "Steel faults";
             df$algo <- "PCA";
+            return(df);
         }
     
     dimRange <- 2:26;
@@ -562,21 +593,70 @@ local({
             A <- as.matrix(ica$A);
             S <- as.matrix(ica$S);
             proj <- S %*% A;
-            foreach(k=ks, .combine = "rbind") %do% {
-                clusters <- kmeans(proj, k, iters, runs);
-                labelsAvg <- clusterPredictErr(clusters, faultLabels);
-                data.frame(dims = dims,
-                           k = k,
-                           test = "Steel faults",
-                           algo = "ICA",
-                           err = sum(labelsAvg$err) / nrow(faultLabels));
-            }
+            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Steel faults";
+            df$algo <- "ICA";
+            return(df);
         }
 
-    kmeansReducedDims <- rbind(pcaKmeansReducedF,
-                               icaKmeansReducedF);
+    kmeansOrigL <-
+        clusterLabelErrFrame(lettersNorm, lettersLabels, ks, iters, runs);
+    kmeansOrigL$test <- "Letters";
+    kmeansOrigL$algo <- "None";
+
+    lettersPca <- prcomp(lettersNorm);
+    pcaKmeansReducedL <-
+        foreach(dims=2:27, .combine = "rbind") %dopar% {
+            mtxR <- as.matrix(lettersPca$rotation[,1:dims]);
+            proj <- as.matrix(lettersNorm) %*% mtxR;
+            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Letters";
+            df$algo <- "PCA";
+            return(df);
+        }
+    
+    dimRange <- 2:26;
+    icaKmeansReducedL <-
+        foreach(dims=dimRange, .combine = "rbind") %dopar% {
+            ica <- fastICA(lettersNorm, dims);
+            A <- as.matrix(ica$A);
+            S <- as.matrix(ica$S);
+            proj <- S %*% A;
+            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Letters";
+            df$algo <- "ICA";
+            return(df);
+        }
+    
+    kmeansReducedDims <-
+        rbind(pcaKmeansReducedF, icaKmeansReducedF, pcaKmeansReducedL,
+              icaKmeansReducedL);
     ## TODO: Add 'k' value to this (though that's not present for EM)
     title <- "Cluster labels on dimension-reduced data";
     
-    save(kmeansReducedDims, title, file=fname);
+    save(kmeansReducedDims, kmeansOrigF, kmeansOrigL, title, file=fname);
 });
+
+###########################################################################
+## Neural nets
+###########################################################################
+
+faultsPca <- prcomp(faultsNorm);
+mtxR <- as.matrix(faultsPca$rotation[,1:10]);
+proj <- as.matrix(faultsNorm) %*% mtxR;
+inputNames <- colnames(proj);
+labelNames <- colnames(faultLabels);
+f <- splitTrainingTest(cbind(proj, faultLabels), 0.8);
+nnT <- system.time(
+    model <- mlp(f$train[inputNames],
+                 f$train[labelNames],
+                 size = 30,
+                 learnFuncParams = c(0.6, 0.0),
+                 maxit = 200,
+                 inputsTest = f$test[inputNames],
+                 targetsTest = f$test[labelNames])
+);
+plotIterativeError(model);

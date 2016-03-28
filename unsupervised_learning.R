@@ -60,7 +60,7 @@ colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
 lettersNorm <- data.frame(
     scale(letters[-which(names(letters) == "Letter")]));
 ## And turn 'Letter' into a 26-wide binary matrix (columns A-Z):
-lettersLabels <- model.matrix( ~ 0 + Letter, letters);
+lettersLabels <- as.data.frame(model.matrix( ~ 0 + Letter, letters));
 colnames(lettersLabels) <- levels(letters$Letter);
 
 ###########################################################################
@@ -117,7 +117,7 @@ distHistogram <- function(clusters, data, idxs) {
 }
 
 ## Given clusters produced by 'kmeans' and a set of labels
-## corresponding to the data used to generate the clusters, perform
+## corresponding to the data used to generate the clusters, performs
 ## some prediction by treating each cluster as producing the average
 ## of the labels that are in it.  This returns a data frame with a
 ## column 'class' for the class index, 'argmax' for a factor that
@@ -138,12 +138,35 @@ clusterPredictErr <- function(clusters, labels) {
     ## Set 'errRate' to the sum of other factors (these are all
     ## "wrong" if we use the highest factor):
     labelsAvg$errRate <- apply(
-        labelsAvg[depCol], 1, function(x) (1 - max(x)));
+        labelsAvg[cols], 1, function(x) (1 - max(x)));
     ## Then set 'err' to that multiplied by the cluster size to tell
     ## us error as a number of instances, not as a rate:
     labelsAvg$size <- clusters$size[labelsAvg$class];
     labelsAvg$err <- labelsAvg$errRate * labelsAvg$size;
     return(labelsAvg);
+}
+
+## Given clusters produced by 'kmeans' and a set of labels
+## corresponding to the data used to generate the clusters, treats
+## each cluster as having the label of whatever label occurs most
+## often in its instances, and produces a confusion matrix from it.
+## The column headings refer to the correct label, and the row
+## headings refer to the 'identified' label.
+clusterConfusionMatrix <- function(clusters, labels) {
+    cols <- colnames(labels);
+    ## Put classes alongside labels so we can aggregate:
+    labels$class <- clusters$cluster;
+    ## Tally up the correct number of each letter in the cluster:
+    labelsAvg <- aggregate(. ~ class, labels, sum);
+    labelsAvg$class <- NULL;
+    ## Figure out which label we should assign this cluster:
+    labelsAvg$argmax <- factor(apply(labelsAvg[cols], 1, which.max),
+                               labels = cols, levels = 1:length(cols));
+    ## Tally up, for each cluster label, what the actual labels are:
+    conf <- aggregate(. ~ argmax, labelsAvg, sum);
+    rownames(conf) <- conf$argmax;
+    conf$argmax <- NULL;
+    return(conf);
 }
 
 ## Generate dissimilarity matrices for steel faults:
@@ -183,12 +206,16 @@ local({
             lc <- kmeans(lettersNorm, k, iters, runs);
             fcSk <- silhouette(fc$cl, faultsDissim);
             lcSk <- silhouette(lc$cl, lettersDissim);
+            fAvgLabels <- clusterPredictErr(fc, faultLabels);
+            lAvgLabels <- clusterPredictErr(lc, lettersLabels);
             return(data.frame(
                 k = k,
                 avgS = c(summary(fcSk)$avg.width,
                          summary(lcSk)$avg.width),
                 withinSs = c(fc$tot.withinss / nrow(faultsNorm),
                              lc$tot.withinss / nrow(lettersNorm)),
+                labelErr = c(sum(fAvgLabels$err) / nrow(faultLabels),
+                             sum(lAvgLabels$err) / nrow(lettersLabels)),
                 test = c("Steel faults", "Letters"))
                 )
         }
@@ -229,27 +256,32 @@ local({
 ## EM
 ###########################################################################
 
-## Build Mclust models for each dataset.  This will be time-consuming.
+## Build Mclust models for each dataset.  This will be very
+## time-consuming.
 local({
     fname <- "emClusters.Rda";
     faultsMcTime <- system.time(
         faultsMc <- Mclust(faultsNorm, 2:500)
     );
+    ## The below just seems to loop infinitely even if I greatly
+    ## reduce the number of clusters (e.g. 2:3).  I'm not sure what's
+    ## going on.
+    ## 
     lettersMcTime <- system.time(
-        lettersMc <- Mclust(lettersNorm, 2:500)
+        lettersMc <- Mclust(lettersNorm, 2:25)
     );
     faultsBic <- data.frame(
         bic = faultsMc$BIC[,"EII"],
         numClusters = strtoi(names(faultsMc$BIC[,"EII"])),
         test = "Steel faults")
-    lettersBic <- data.frame(
-        bic = lettersMc$BIC[,"EII"],
-        numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
-        test = "Letters")
-    bic <- rbind(faultsBic, lettersBic);
+    ##lettersBic <- data.frame(
+    ##    bic = lettersMc$BIC[,"EII"],
+    ##    numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
+    ##    test = "Letters")
+    bic <- rbind(faultsBic) ## , lettersBic);
     xlab <- "Number of clusters";
     ylab <- "Bayesian Information Criterion value";
-    save(faultsMc, lettersMc, faultsMcTime, lettersMcTime, xlab, ylab, bic,
+    save(faultsMc, faultsMcTime, xlab, ylab, bic,
          file = fname);
 });
 
@@ -489,6 +521,21 @@ local({
 ## Clustering re-projected points
 ###########################################################################
 
+## For some data, corresponding output labels, a range of k values to
+## use, and a number of iterations & runs for k-means, performs
+## k-means clustering and computes the average classification error -
+## if treating each cluster as representing the average label of its
+## contents.
+clusterLabelErrFrame <- function(data, labels, ks, iters, runs) {
+    foreach(k=ks, .combine = "rbind") %do% {
+        clusters <- kmeans(data, k, iters, runs);
+        labelsAvg <- clusterPredictErr(clusters, labels);
+        data.frame(dims = dims,
+                   k = k,
+                   err = sum(labelsAvg$err) / nrow(labels));
+    }
+}
+
 local({
     fname <- "kmeansReducedDims.Rda";
     iters <- 200;
@@ -503,15 +550,9 @@ local({
         foreach(dims=2:27, .combine = "rbind") %dopar% {
             mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
             proj <- as.matrix(faultsNorm) %*% mtxR;
-            foreach(k=ks, .combine = "rbind") %do% {
-                clusters <- kmeans(proj, k, iters, runs);
-                labelsAvg <- clusterPredictErr(clusters, faultLabels);
-                data.frame(dims = dims,
-                           k = k,
-                           test = "Steel faults",
-                           algo = "PCA",
-                           err = sum(labelsAvg$err) / nrow(faultLabels));
-            }
+            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df$test <- "Steel faults";
+            df$algo <- "PCA";
         }
     
     dimRange <- 2:26;

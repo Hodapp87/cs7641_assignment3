@@ -654,18 +654,25 @@ stackError <- function(model)
     return(stacked);
 }
 
-## So far the below just tests PCA:
 faultsPca <- prcomp(faultsNorm);
 inputNames <- colnames(faultsNorm);
 labelNames <- colnames(faultLabels);
 f <- splitTrainingTest(cbind(faultsNorm, faultLabels), 0.8);
 faultsTrain <- f$train;
 faultsTest <- f$test;
+
+## Train a 'reference' net on the original data:
+faultsNn <- mlp(faultsTrain[inputNames], faultsTrain[labelNames],
+                size = 30, learnFuncParams = c(0.6, 0.0),
+                maxit = 100, inputsTest = faultsTest[inputNames],
+                targetsTest = faultsTest[labelNames]);
+
+## So far the below just tests PCA:
 local({
     fname <- "nnetLearning.Rda"
     neuralNetTime <- system.time(
         neuralNetErr <-
-            foreach (dims = c(5, 10, 20, 27), .combine = rbind) %dopar% {
+            foreach (dims = c(5, 10, 15), .combine = rbind) %dopar% {
                 cat(dims);
                 cat('..');
                 mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
@@ -683,9 +690,34 @@ local({
                 return(err);
         }
     );
+    neuralNetErr$dims <- sprintf("%d", neuralNetErr$dims);
+    err <- stackError(faultsNn);
+    err$dims <- "N/A";
+    neuralNetErr <- rbind(neuralNetErr, err);
+    
     save(neuralNetErr, neuralNetTime, file=fname);
 });
 
+## Train another 'reference' net on original data, but with the more
+## optimal number of iterations:
+faultsNnOpt <- mlp(faultsTrain[inputNames], faultsTrain[labelNames],
+                size = 30, learnFuncParams = c(0.6, 0.0),
+                maxit = 15, inputsTest = faultsTest[inputNames],
+                targetsTest = faultsTest[labelNames]);
+refErr <- local({
+    trainOutput <- predict(faultsNnOpt, faultsTrain[inputNames]);
+    trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
+    idxs <- apply(trainOutput, 1, which.max);
+    trainCorrect <- sum(idxs == trainIdxs);
+    trainErr <- 1 - trainCorrect / length(trainIdxs);
+    testOutput  <- predict(faultsNnOpt, faultsTest[inputNames]);
+    testIdxs <- apply(faultsTest[labelNames], 1, which.max);
+    idxs <- apply(testOutput, 1, which.max);
+    testCorrect <- sum(idxs == testIdxs);
+    testErr <- 1 - testCorrect / length(testIdxs);
+    return(data.frame(testErr, trainErr));
+});
+    
 local({
     fname <- "nnetError.Rda"
     neuralNetTime <- system.time(
@@ -720,5 +752,6 @@ local({
                                   stage = c("Train", "Test")))
         }
     );
-    save(neuralNetErr, neuralNetTime, file=fname);
+    
+    save(neuralNetErr, neuralNetTime, refErr, file=fname);
 });

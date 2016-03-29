@@ -15,6 +15,7 @@ library(mclust);
 library(cluster);
 library(fastICA);
 library(RPEnsemble);
+library(MASS);
 
 source("multiplot.R");
 
@@ -41,6 +42,10 @@ print("Loading & converting data...");
 
 ## Load data for "Steel Plates Faults" & apply proper header names:
 faults <- read.table("Faults.NNA", sep="\t", header=FALSE);
+
+## Remove a pesky outlier:
+faults <- faults[-392,];
+
 colnames(faults) <- readLines("Faults27x7_var");
 ## If these are missing, use:
 ## https://archive.ics.uci.edu/ml/datasets/Steel+Plates+Faults
@@ -50,17 +55,16 @@ colnames(faults) <- readLines("Faults27x7_var");
 ## Dependent variables are several exclusive binary columns:
 depCol <- c("Pastry", "Z_Scratch", "K_Scatch", "Stains",
             "Dirtiness", "Bumps", "Other_Faults");
-## Turn these into a factor:
-## resp <- factor(apply(faults[depCol], 1, function(x) which(x == 1)),
-##                labels = depCol);
 
-## Set that factor to 'Fault' and remove the variables that created it:
-## faults$Fault <- resp;
-## faults[depCol] <- list(NULL);
+## Turn fault labels into a factor (may need this someplace):
+faultFactor <- factor(apply(faultLabels, 1, function(x) which(x == 1)),
+                      labels = depCol);
 
 ## Also standardize data to mean 0, variance 1, separating labels:
 faultsNorm <- data.frame(scale(faults[-which(names(faults) %in% depCol)]))
 faultLabels <- faults[depCol];
+inputNames <- colnames(faultsNorm);
+labelNames <- colnames(faultLabels);
 
 ## Load data for "Letter Recognition" data set & apply headers:
 letters <- read.table("letter-recognition.data", sep=",", header=FALSE);
@@ -313,7 +317,19 @@ local({
 
 faultsPca <- prcomp(faultsNorm);
 lettersPca <- prcomp(lettersNorm);
-save(faultsPca, lettersPca, file="pca.Rda");
+faultPcaDf <- data.frame(class = faultFactor, pca = faultsPca$x);
+lettersPcaDf <- data.frame(class = letters$Letter, pca = lettersPca$x);
+save(faultsPca, lettersPca, faultPcaDf, lettersPcaDf, file="pca.Rda");
+
+ggplot(faultPcaDf) +
+    geom_point(aes(pca.PC1, pca.PC2, colour = class), size = 2) +
+    xlab("PC1") +
+    ylab("PC2")
+
+ggplot(lettersPcaDf) +
+    geom_point(aes(pca.PC1, pca.PC2, colour = class), size = 0.5) +
+    xlab("PC1") +
+    ylab("PC2")
 
 ## Given a PCA loading matrix and some (compatible) data, compute the
 ## reconstruction error from using just the 1st principal, the first 2
@@ -540,6 +556,14 @@ local({
 });
 
 ###########################################################################
+## LDA
+###########################################################################
+## Okay, that's atrocious.
+faultsFormula <- formula(paste(paste(labelNames, collapse=" + "), " ~ ."));
+faultsGlm <- glm(faultsFormula, data=cbind(faultsNorm, faultLabels));
+faultsLda <- lda(faultsFormula, cbind(faultsNorm, faultLabels));
+
+###########################################################################
 ## Clustering re-projected points
 ###########################################################################
 
@@ -655,8 +679,6 @@ stackError <- function(model)
 }
 
 faultsPca <- prcomp(faultsNorm);
-inputNames <- colnames(faultsNorm);
-labelNames <- colnames(faultLabels);
 f <- splitTrainingTest(cbind(faultsNorm, faultLabels), 0.8);
 faultsTrain <- f$train;
 faultsTest <- f$test;

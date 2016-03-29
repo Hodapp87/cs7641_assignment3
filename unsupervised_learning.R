@@ -287,26 +287,24 @@ local({
     faultsMcTime <- system.time(
         faultsMc <- Mclust(faultsNorm, 2:500)
     );
-    ## The below just seems to loop infinitely even if I greatly
-    ## reduce the number of clusters (e.g. 2:3).  I'm not sure what's
-    ## going on.
-    ## 
-    lettersMcTime <- system.time(
-        lettersMc <- Mclust(lettersNorm, 2:50)
-    );
     faultsBic <- data.frame(
-        bic = faultsMc$BIC[,"EII"],
+        bic = faultsMc$BIC[,"EII"] / nrow(faultsNorm),
         numClusters = strtoi(names(faultsMc$BIC[,"EII"])),
         test = "Steel faults")
-    ##lettersBic <- data.frame(
-    ##    bic = lettersMc$BIC[,"EII"],
-    ##    numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
-    ##    test = "Letters")
-    bic <- rbind(faultsBic) ## , lettersBic);
+    ## The below is really, really slow.
+    #lettersMcTime <- system.time(
+    #    lettersMc <- Mclust(lettersNorm, 2:100)
+    #);
+    load("lettersMc.Rda");
+    lettersBic <- data.frame(
+        bic = lettersMc$BIC[,"EII"] / nrow(lettersNorm),
+        numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
+        test = "Letters")
+    bic <- rbind(faultsBic, lettersBic);
     xlab <- "Number of clusters";
-    ylab <- "Bayesian Information Criterion value";
-    save(faultsMc, faultsMcTime, xlab, ylab, bic,
-         file = fname);
+    ylab <- "Average BIC value";
+    save(faultsMc, faultsMcTime, lettersMc, lettersMcTime, xlab, ylab,
+         bic, file = fname);
 });
 
 ###########################################################################
@@ -561,10 +559,10 @@ clusterLabelErrFrame <- function(data, labels, ks, iters, runs) {
 
 local({
     fname <- "kmeansReducedDims.Rda";
-    iters <- 200;
-    runs <- 100;
+    iters <- 100;
+    runs <- 50;
 
-    ks <- c(15, 45, 135, 405);
+    ks <- c(20, 80, 250);
 
     kmeansOrigF <-
         clusterLabelErrFrame(faultsNorm, faultLabels, ks, iters, runs);
@@ -586,9 +584,8 @@ local({
             return(df);
         }
     
-    dimRange <- 2:26;
     icaKmeansReducedF <-
-        foreach(dims=dimRange, .combine = "rbind") %dopar% {
+        foreach(dims=2:26, .combine = "rbind") %dopar% {
             ica <- fastICA(faultsNorm, dims);
             A <- as.matrix(ica$A);
             S <- as.matrix(ica$S);
@@ -607,7 +604,7 @@ local({
 
     lettersPca <- prcomp(lettersNorm);
     pcaKmeansReducedL <-
-        foreach(dims=2:27, .combine = "rbind") %dopar% {
+        foreach(dims=2:16, .combine = "rbind") %dopar% {
             mtxR <- as.matrix(lettersPca$rotation[,1:dims]);
             proj <- as.matrix(lettersNorm) %*% mtxR;
             df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
@@ -617,9 +614,8 @@ local({
             return(df);
         }
     
-    dimRange <- 2:26;
     icaKmeansReducedL <-
-        foreach(dims=dimRange, .combine = "rbind") %dopar% {
+        foreach(dims=2:16, .combine = "rbind") %dopar% {
             ica <- fastICA(lettersNorm, dims);
             A <- as.matrix(ica$A);
             S <- as.matrix(ica$S);
@@ -644,19 +640,85 @@ local({
 ## Neural nets
 ###########################################################################
 
+## Given a neural network model from 'mlp' (of RSNNS), create a data
+## frame which stacks the training & testing error.  Column 'idx' is
+## iteration number, 'error' is the sum of squared error, and 'stage'
+## is 'Train' or 'Test'.
+stackError <- function(model)
+{
+    idxs <- seq(1, length(model$IterativeFitError));
+    stacked <- rbind(
+        data.frame(idx=idxs, error=model$IterativeFitError,  stage="Train"),
+        data.frame(idx=idxs, error=model$IterativeTestError, stage="Test"));
+
+    return(stacked);
+}
+
+## So far the below just tests PCA:
 faultsPca <- prcomp(faultsNorm);
-mtxR <- as.matrix(faultsPca$rotation[,1:10]);
-proj <- as.matrix(faultsNorm) %*% mtxR;
-inputNames <- colnames(proj);
+inputNames <- colnames(faultsNorm);
 labelNames <- colnames(faultLabels);
-f <- splitTrainingTest(cbind(proj, faultLabels), 0.8);
-nnT <- system.time(
-    model <- mlp(f$train[inputNames],
-                 f$train[labelNames],
-                 size = 30,
-                 learnFuncParams = c(0.6, 0.0),
-                 maxit = 200,
-                 inputsTest = f$test[inputNames],
-                 targetsTest = f$test[labelNames])
-);
-plotIterativeError(model);
+f <- splitTrainingTest(cbind(faultsNorm, faultLabels), 0.8);
+faultsTrain <- f$train;
+faultsTest <- f$test;
+local({
+    fname <- "nnetLearning.Rda"
+    neuralNetTime <- system.time(
+        neuralNetErr <-
+            foreach (dims = c(5, 10, 20, 27), .combine = rbind) %dopar% {
+                cat(dims);
+                cat('..');
+                mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
+                projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtxR;
+                projTest <- as.matrix(faultsTest[inputNames]) %*% mtxR;
+                model <- mlp(projTrain,
+                             faultsTrain[labelNames],
+                             size = 30,
+                             learnFuncParams = c(0.6, 0.0),
+                             maxit = 100,
+                             inputsTest = projTest,
+                             targetsTest = faultsTest[labelNames]);
+                err <- stackError(model);
+                err$dims <- dims;
+                return(err);
+        }
+    );
+    save(neuralNetErr, neuralNetTime, file=fname);
+});
+
+local({
+    fname <- "nnetError.Rda"
+    neuralNetTime <- system.time(
+        neuralNetErr <-
+            foreach (dims = 1:27, .combine = rbind) %dopar% {
+                cat(dims);
+                cat('..');
+                mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
+                projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtxR;
+                projTest <- as.matrix(faultsTest[inputNames]) %*% mtxR;
+                model <- mlp(projTrain,
+                             faultsTrain[labelNames],
+                             size = 30,
+                             learnFuncParams = c(0.6, 0.0),
+                             maxit = 15,
+                             inputsTest = projTest,
+                             targetsTest = faultsTest[labelNames]);
+                ## Apply to training & test dataset to get errors:
+                trainOutput <- predict(model, projTrain);
+                trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
+                idxs <- apply(trainOutput, 1, which.max);
+                trainCorrect <- sum(idxs == trainIdxs);
+                trainErr <- 1 - trainCorrect / length(trainIdxs);
+                testOutput  <- predict(model, projTest);
+                testIdxs <- apply(faultsTest[labelNames], 1, which.max);
+                idxs <- apply(testOutput, 1, which.max);
+                testCorrect <- sum(idxs == testIdxs);
+                testErr <- 1 - testCorrect / length(testIdxs);
+                
+                return(data.frame(dims = c(dims, dims),
+                                  error = c(trainErr, testErr),
+                                  stage = c("Train", "Test")))
+        }
+    );
+    save(neuralNetErr, neuralNetTime, file=fname);
+});

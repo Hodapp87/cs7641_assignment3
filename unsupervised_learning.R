@@ -66,6 +66,11 @@ labelNames <- colnames(faultsLabels);
 faultFactor <- factor(apply(faultsLabels, 1, function(x) which(x == 1)),
                       labels = depCol);
 
+## Split training & test:
+tt <- splitTrainingTest(cbind(faultsNorm, faultsLabels), 0.8);
+faultsTrain <- tt$train;
+faultsTest <- tt$test;
+
 ## Load data for "Letter Recognition" data set & apply headers:
 letters <- read.table("letter-recognition.data", sep=",", header=FALSE);
 colnames(letters) <- c("Letter", "Xbox", "Ybox", "Width", "Height",
@@ -182,6 +187,7 @@ clusterConfusionMatrix <- function(clusters, labels) {
                                labels = cols, levels = 1:length(cols));
     ## Tally up, for each cluster label, what the actual labels are:
     conf <- aggregate(. ~ argmax, labelsAvg, sum);
+    ## TODO: Not just reimplement confusionMatrix above.
     rownames(conf) <- conf$argmax;
     conf$argmax <- NULL;
     return(conf);
@@ -473,14 +479,17 @@ local({
     faultsCfs <- cfs(Class ~ .,
                      cbind(faultsNorm,
                            data.frame(Class = faultFactor)));
+    lettersCfs <- cfs(Letter ~ .,
+                      cbind(lettersNorm,
+                            data.frame(Letter = letters$Letter)));
 
-    save(faultsCfs, file=fname);
+    save(faultsCfs, lettersCfs, file=fname);
 });
 
 ###########################################################################
 ## Reduced-dimensionality k-means
 ###########################################################################
-local({
+runKmeansReducedDims <- function({
     fname <- "kmeansReducedDims.Rda";
     iters <- 100;
     runs <- 50;
@@ -527,10 +536,10 @@ local({
     icaKmeansReducedF <-
         foreach(dims=2:26, .combine = "rbind") %dopar% {
             ica <- fastICA(faultsNorm, dims);
-            A <- as.matrix(ica$A);
-            S <- as.matrix(ica$S);
-            proj <- S %*% A;
-            df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
+            ##A <- as.matrix(ica$A);
+            ##S <- as.matrix(ica$S);
+            ##proj <- S %*% A;
+            df <- clusterLabelErrFrame(ica$S, faultsLabels, ks, iters, runs);
             df$dims <- dims;
             df$test <- "Steel faults";
             df$algo <- "ICA";
@@ -593,10 +602,10 @@ local({
     icaKmeansReducedL <-
         foreach(dims=2:16, .combine = "rbind") %dopar% {
             ica <- fastICA(lettersNorm, dims);
-            A <- as.matrix(ica$A);
-            S <- as.matrix(ica$S);
-            proj <- S %*% A;
-            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            ##A <- as.matrix(ica$A);
+            ##S <- as.matrix(ica$S);
+            ##proj <- S %*% A;
+            df <- clusterLabelErrFrame(ica$S, lettersLabels, ks, iters, runs);
             df$dims <- dims;
             df$test <- "Letters";
             df$algo <- "ICA";
@@ -644,6 +653,7 @@ local({
         bic = faultsMc$BIC[,"EII"] / nrow(faultsNorm),
         numClusters = strtoi(names(faultsMc$BIC[,"EII"])),
         test = "Steel faults")
+    faultsEmCc <- emConfusion(faultsMc, faultsLabels);
     ## The below is really, really slow.
     #lettersMcTime <- system.time(
     #    lettersMc <- Mclust(lettersNorm, 2:100)
@@ -653,11 +663,12 @@ local({
         bic = lettersMc$BIC[,"EII"] / nrow(lettersNorm),
         numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
         test = "Letters")
+    lettersEmCc <- emConfusion(lettersMc, lettersLabels);
     bic <- rbind(faultsBic, lettersBic);
     xlab <- "Number of clusters";
     ylab <- "Average BIC value";
-    save(faultsMc, faultsMcTime, lettersMc, lettersMcTime, xlab, ylab,
-         bic, file = fname);
+    save(faultsMc, faultsMcTime, faultsEmCc, lettersMc, lettersEmCc,
+         lettersMcTime, xlab, ylab, bic, file = fname);
 });
 
 ###########################################################################
@@ -763,67 +774,61 @@ local({
 });
 
 ###########################################################################
-## MDS (Multidimensional Scaling)
+## MDS (Multidimensional Scaling) or whatever
 ###########################################################################
-faultsMds <- cmdscale(faultsDissim, 2, eig = TRUE);
-## lettersMds <- cmdscale(lettersDissim, 2, eig = TRUE);
-faultsMdsDf <- data.frame(
-    x = faultsMds$points[, 1],
-    y = faultsMds$points[, 2],
-    class = faultFactor
-);
+failedTests <- function() {
+    faultsMds <- cmdscale(faultsDissim, 2, eig = TRUE);
+    ## lettersMds <- cmdscale(lettersDissim, 2, eig = TRUE);
+    faultsMdsDf <- data.frame(
+        x = faultsMds$points[, 1],
+        y = faultsMds$points[, 2],
+        class = faultFactor
+    );
 
-ggplot(faultsMdsDf) +
-    geom_point(aes(x, y, colour = class), size = 2);
+    ggplot(faultsMdsDf) +
+        geom_point(aes(x, y, colour = class), size = 2);
 
-## Faults data is lower-rank for some reason, so remove one column:
-## rmCol <- c(-1, -2, -3, -4, -5, -6, -7);
-## faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultsLabels));
+    ## Faults data is lower-rank for some reason, so remove one column:
+    ## rmCol <- c(-1, -2, -3, -4, -5, -6, -7);
+    ## faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultsLabels));
 
-lettersLda <- lda(Letter ~ .,
-                  cbind(lettersNorm,
-                        data.frame(Letter = letters$Letter)));
+    lettersLda <- lda(Letter ~ .,
+                      cbind(lettersNorm,
+                            data.frame(Letter = letters$Letter)));
 
-plda <- predict(object = lettersLda, newdata = lettersNorm);
-dataset <- data.frame(class = letters$Letter,
-                      lda = plda$x);
+    plda <- predict(object = lettersLda, newdata = lettersNorm);
+    dataset <- data.frame(class = letters$Letter,
+                          lda = plda$x);
 
-p1 <- ggplot(dataset) +
-    geom_point(aes(lda.LD1, lda.LD2, colour = class), size = 2.5)
-print(p1)
+    p1 <- ggplot(dataset) +
+        geom_point(aes(lda.LD1, lda.LD2, colour = class), size = 2.5)
+    print(p1)
 
-###########################################################################
-## Kernel PCA outputs
-###########################################################################
-kpc <- kpca(~.,
-            data=faultsNorm,
-            kernel="rbfdot",
-            kpar=list(sigma=0.1),
-            features=2);
+    kpc <- kpca(~.,
+                data=faultsNorm,
+                kernel="rbfdot",
+                kpar=list(sigma=0.1),
+                features=2);
 
-kpc10 <- kpca(~.,
-              data=faultsNorm,
-              kernel="rbfdot",
-              kpar=list(sigma=0.1),
-              features=10);
+    kpc10 <- kpca(~.,
+                  data=faultsNorm,
+                  kernel="rbfdot",
+                  kpar=list(sigma=0.1),
+                  features=10);
 
-faultsKpcaDf <- data.frame(
-    x = rotated(kpc)[, 1],
-    y = rotated(kpc)[, 2],
-    class = faultFactor
-);
+    faultsKpcaDf <- data.frame(
+        x = rotated(kpc)[, 1],
+        y = rotated(kpc)[, 2],
+        class = faultFactor
+    );
 
-ggplot(faultsKpcaDf) +
-    geom_point(aes(x, y, colour = class), size = 2);
-
+    ggplot(faultsKpcaDf) +
+        geom_point(aes(x, y, colour = class), size = 2);
+};
+ 
 ###########################################################################
 ## Neural net outputs
 ###########################################################################
-
-faultsPca <- prcomp(faultsNorm);
-f <- splitTrainingTest(cbind(faultsNorm, faultsLabels), 0.8);
-faultsTrain <- f$train;
-faultsTest <- f$test;
 
 ## Train a 'reference' net on the original data:
 faultsNn <- mlp(faultsTrain[inputNames], faultsTrain[labelNames],
@@ -839,6 +844,7 @@ local({
             foreach (dims = c(5, 10, 15), .combine = rbind) %dopar% {
                 cat(dims);
                 cat('..');
+                faultsPca <- prcomp(faultsNorm);
                 mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
                 projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtxR;
                 projTest <- as.matrix(faultsTest[inputNames]) %*% mtxR;
@@ -862,60 +868,91 @@ local({
     save(neuralNetErr, neuralNetTime, file=fname);
 });
 
-## Train another 'reference' net on original data, but with the more
-## optimal number of iterations:
-faultsNnOpt <- mlp(faultsTrain[inputNames], faultsTrain[labelNames],
-                size = 30, learnFuncParams = c(0.6, 0.0),
-                maxit = 15, inputsTest = faultsTest[inputNames],
-                targetsTest = faultsTest[labelNames]);
-refErr <- local({
-    trainOutput <- predict(faultsNnOpt, faultsTrain[inputNames]);
+nnTrain <- function(train, test) {
+    model <- mlp(train,
+                 faultsTrain[labelNames],
+                 size = 30,
+                 learnFuncParams = c(0.6, 0.0),
+                 maxit = 15,
+                 inputsTest = test,
+                 targetsTest = faultsTest[labelNames]);
+    ## Apply to training & test dataset to get errors:
+    trainOutput <- predict(model, train);
     trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
     idxs <- apply(trainOutput, 1, which.max);
     trainCorrect <- sum(idxs == trainIdxs);
     trainErr <- 1 - trainCorrect / length(trainIdxs);
-    testOutput  <- predict(faultsNnOpt, faultsTest[inputNames]);
+    testOutput  <- predict(model, test);
     testIdxs <- apply(faultsTest[labelNames], 1, which.max);
     idxs <- apply(testOutput, 1, which.max);
     testCorrect <- sum(idxs == testIdxs);
     testErr <- 1 - testCorrect / length(testIdxs);
-    return(data.frame(testErr, trainErr));
-});
-    
+    return(data.frame(trainErr, testErr));
+};
+
 local({
     fname <- "nnetError.Rda"
-    neuralNetTime <- system.time(
-        neuralNetErr <-
-            foreach (dims = 1:27, .combine = rbind) %dopar% {
-                cat(dims);
-                cat('..');
-                mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
-                projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtxR;
-                projTest <- as.matrix(faultsTest[inputNames]) %*% mtxR;
-                model <- mlp(projTrain,
-                             faultsTrain[labelNames],
-                             size = 30,
-                             learnFuncParams = c(0.6, 0.0),
-                             maxit = 15,
-                             inputsTest = projTest,
-                             targetsTest = faultsTest[labelNames]);
-                ## Apply to training & test dataset to get errors:
-                trainOutput <- predict(model, projTrain);
-                trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
-                idxs <- apply(trainOutput, 1, which.max);
-                trainCorrect <- sum(idxs == trainIdxs);
-                trainErr <- 1 - trainCorrect / length(trainIdxs);
-                testOutput  <- predict(model, projTest);
-                testIdxs <- apply(faultsTest[labelNames], 1, which.max);
-                idxs <- apply(testOutput, 1, which.max);
-                testCorrect <- sum(idxs == testIdxs);
-                testErr <- 1 - testCorrect / length(testIdxs);
-                
-                return(data.frame(dims = c(dims, dims),
-                                  error = c(trainErr, testErr),
-                                  stage = c("Train", "Test")))
-        }
-    );
+
+    ## Train another 'reference' net on original data, but with the more
+    ## optimal number of iterations:
+    d1 <- ncol(faultsNorm);
+    r <- nnTrain(faultsTrain[inputNames], faultsTest[inputNames]);
+    refErr <- data.frame(
+        dims = c(1, 1, d1, d1),
+        algo = "N/A",
+        error = c(r$trainErr, r$testErr, r$trainErr, r$testErr),
+        stage = c("Train", "Test", "Train", "Test"));
+        
+    pcaNnErr <-
+        foreach (dims = 1:27, .combine = rbind) %dopar% {
+            cat(dims);
+            cat('..');
+            faultsPca <- prcomp(faultsNorm);
+            mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
+            projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtxR;
+            projTest <- as.matrix(faultsTest[inputNames]) %*% mtxR;
+            err <- nnTrain(projTrain, projTest);
+            return(data.frame(dims = dims,
+                              algo = "PCA",
+                              error = c(err$trainErr, err$testErr),
+                              stage = c("Train", "Test")));
+        };
+
+    icaNnErr <-
+        foreach (dims = 1:26, .combine = rbind) %dopar% {
+            cat(dims);
+            cat('..');
+            ica <- fastICA(faultsNorm, dims);
+            ##A <- as.matrix(ica$A);
+            ##S <- as.matrix(ica$S);
+            proj <- ica$K %*% ica$W;
+            projTrain <- as.matrix(faultsTrain[inputNames]) %*% proj;
+            projTest <- as.matrix(faultsTest[inputNames]) %*% proj;
+            err <- nnTrain(projTrain, projTest);
+            return(data.frame(dims = dims,
+                              algo = "ICA",
+                              error = c(err$trainErr, err$testErr),
+                              stage = c("Train", "Test")));
+        };
+
+    cfsNnErr <- local({
+        faultsCfs <- cfs(Class ~ .,
+                         cbind(faultsNorm,
+                               data.frame(Class = faultFactor)));
+        projTrain <- faultsTrain[faultsCfs];
+        projTest <- faultsTest[faultsCfs];
+        err <- nnTrain(projTrain, projTest);
+        ## Same kludge (to plot properly):
+        d0 <- length(faultsCfs);
+        d1 <- ncol(faultsNorm);
+        return(data.frame(
+            dims = c(d0, d0, d1, d1),
+            algo = "CFS",
+            error = c(err$trainErr, err$testErr, err$trainErr, err$testErr),
+            stage = c("Train", "Test", "Train", "Test")));
+    });
+
+    neuralNetErr <- rbind(pcaNnErr, icaNnErr, cfsNnErr, refErr);
     
-    save(neuralNetErr, neuralNetTime, refErr, file=fname);
+    save(neuralNetErr, refErr, file=fname);
 });

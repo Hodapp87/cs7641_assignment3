@@ -58,12 +58,12 @@ depCol <- c("Pastry", "Z_Scratch", "K_Scatch", "Stains",
 
 ## Also standardize data to mean 0, variance 1, separating labels:
 faultsNorm <- data.frame(scale(faults[-which(names(faults) %in% depCol)]))
-faultLabels <- faults[depCol];
+faultsLabels <- faults[depCol];
 inputNames <- colnames(faultsNorm);
-labelNames <- colnames(faultLabels);
+labelNames <- colnames(faultsLabels);
 
 ## Turn fault labels into a factor (may need this someplace):
-faultFactor <- factor(apply(faultLabels, 1, function(x) which(x == 1)),
+faultFactor <- factor(apply(faultsLabels, 1, function(x) which(x == 1)),
                       labels = depCol);
 
 ## Load data for "Letter Recognition" data set & apply headers:
@@ -223,6 +223,54 @@ tryCatch(
 ###########################################################################
 
 
+## For input 'mclust' (a model from the Mclust function) and 'labels'
+## (a binary matrix corresponding to each input used for EM), returns
+## a matrix which gives the probabilities of each cluster having the
+## given class.  That matrix has one row per cluster, and one column
+## per label.
+emClassMtx <- function(mclust, labels) {
+    ## First, get the Z matrix from the model.  The Z matrix has one
+    ## row for each instance and one column for each cluster, each row
+    ## giving the probabilities that that instance belongs to each
+    ## cluster.
+    z <- as.matrix(mclust$z);
+    ## The labels are already the matrix we need: One row per
+    ## instance, one column per class.  From this and Z, we may
+    ## produce a matrix which gives the mean label of each cluster -
+    ## one row per cluster, one column per class.
+    clMean <- t(z) %*% as.matrix(labels);
+    ## It will however need normalization:
+    clMean <- clMean / rowSums(clMean);
+    return(clMean);
+}
+
+## For input 'mclust' (a model from the Mclust function) and 'labels'
+## (a binary matrix corresponding to each input used for EM), returns
+## a matrix, same size as 'labels', which gives the probability of
+## each corresponding label, according to the model.
+emLabel <- function(mclust, labels) {
+    z <- as.matrix(mclust$z);
+    clMtx <- emClassMtx(mclust, labels);
+    return(z %*% clMtx);
+}
+
+## For input 'mclust' (a model from the Mclust function) and 'labels'
+## (a binary matrix corresponding to each input used for EM), returns
+## a confusion matrix for each class - assuming that the model is used
+## to predict the outcomes by the probabilities in each cluster.
+emConfusion <- function(mclust, labels) {
+    emLabels <- emLabel(mclust, labels);
+    ## Is the below just encodeClassLabels?
+    getFactor <- function(l) {
+        factor(apply(l, 1, which.max),
+               labels = colnames(labels),
+               levels = 1:length(colnames(labels)))
+    };
+    correct <- getFactor(labels);
+    predicted <- getFactor(emLabels);
+    return(confusionMatrix(correct, predicted));
+}
+
 ###########################################################################
 ## PCA
 ###########################################################################
@@ -368,7 +416,7 @@ local({
             lc <- kmeans(lettersNorm, k, iters, runs);
             fcSk <- silhouette(fc$cl, faultsDissim);
             lcSk <- silhouette(lc$cl, lettersDissim);
-            fAvgLabels <- clusterPredictErr(fc, faultLabels);
+            fAvgLabels <- clusterPredictErr(fc, faultsLabels);
             lAvgLabels <- clusterPredictErr(lc, lettersLabels);
             return(data.frame(
                 k = k,
@@ -376,7 +424,7 @@ local({
                          summary(lcSk)$avg.width),
                 withinSs = c(fc$tot.withinss / nrow(faultsNorm),
                              lc$tot.withinss / nrow(lettersNorm)),
-                labelErr = c(sum(fAvgLabels$err) / nrow(faultLabels),
+                labelErr = c(sum(fAvgLabels$err) / nrow(faultsLabels),
                              sum(lAvgLabels$err) / nrow(lettersLabels)),
                 test = c("Steel faults", "Letters"))
                 )
@@ -440,7 +488,7 @@ local({
     ks <- c(20, 80, 250);
 
     kmeansOrigF <-
-        clusterLabelErrFrame(faultsNorm, faultLabels, ks, iters, runs);
+        clusterLabelErrFrame(faultsNorm, faultsLabels, ks, iters, runs);
     kmeansOrigF$test <- "Steel faults";
     kmeansOrigF$algo <- "None";
 
@@ -452,14 +500,14 @@ local({
         foreach(dims=2:27, .combine = "rbind") %dopar% {
             mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
             proj <- as.matrix(faultsNorm) %*% mtxR;
-            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
             df$dims <- dims;
             df$test <- "Steel faults";
             df$algo <- "PCA";
             return(df);
         }
 
-    if FALSE {
+    if (FALSE) {
     kpcaKmeansReducedF <-
         foreach(dims=2:27, .combine = "rbind") %dopar% {
             cat("kpca");
@@ -468,7 +516,7 @@ local({
             kpc <- kpca(~., data=faultsNorm, kernel="rbfdot",
                         kpar=list(sigma=0.1), features=dims);
             proj <- rotated(kpc);
-            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
             df$dims <- dims;
             df$test <- "Steel faults";
             df$algo <- "k-PCA";
@@ -482,7 +530,7 @@ local({
             A <- as.matrix(ica$A);
             S <- as.matrix(ica$S);
             proj <- S %*% A;
-            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
             df$dims <- dims;
             df$test <- "Steel faults";
             df$algo <- "ICA";
@@ -494,7 +542,7 @@ local({
                          cbind(faultsNorm,
                                data.frame(Class = faultFactor)));
         proj <- faultsNorm[faultsCfs];
-        df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+        df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
         ## Kludge alert (it's to plot properly):
         df1 <- df;
         df1$dims <- length(faultsCfs);
@@ -524,7 +572,7 @@ local({
         }
 
     ## This is so slow as to be unusable
-    if FALSE {
+    if (FALSE) {
     kpcaKmeansReducedL <-
         ## %do%, not %dopar%, because this is very memory-intensive:
         foreach(dims=2:16, .combine = "rbind") %do% {
@@ -730,7 +778,7 @@ ggplot(faultsMdsDf) +
 
 ## Faults data is lower-rank for some reason, so remove one column:
 ## rmCol <- c(-1, -2, -3, -4, -5, -6, -7);
-## faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultLabels));
+## faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultsLabels));
 
 lettersLda <- lda(Letter ~ .,
                   cbind(lettersNorm,
@@ -773,7 +821,7 @@ ggplot(faultsKpcaDf) +
 ###########################################################################
 
 faultsPca <- prcomp(faultsNorm);
-f <- splitTrainingTest(cbind(faultsNorm, faultLabels), 0.8);
+f <- splitTrainingTest(cbind(faultsNorm, faultsLabels), 0.8);
 faultsTrain <- f$train;
 faultsTest <- f$test;
 

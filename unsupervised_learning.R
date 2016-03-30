@@ -367,6 +367,43 @@ rcaReconstrError <- function(data, dimRange, runs) {
     };
 }
 
+## For input 'data' with P columns, returns a projection matrix of
+## size (P, dims), computed by running random projections for the
+## given number of runs.
+
+## For input 'data' with P columns, runs random projections to 'dims'
+## dimensions, for the given number of runs, returning a list with
+## 'err' (a vector of the progressive lowest error across iterations)
+## and 'mtx' (a projection matrix of size (P, dims) which produced the
+## lowest error).
+rcaBestProj <- function(data, dims, runs) {
+    ## Get a list of lists (maybe there's a better way to do this, I
+    ## don't really care), each one having 'err' (the reconstruction
+    ## error), 'mtx' (the projection matrix producing that), and
+    ## 'iter' (the iteration number).
+    errs <- foreach(run=1:runs) %dopar% {
+        projMtx <- RPGenerate(ncol(data), dims);
+        projData <- as.matrix(data) %*% projMtx;
+        reconstr <- projData %*% t(projMtx);
+        return(list(iter = run,
+                    err = sum((reconstr - data)^2),
+                    mtx = projMtx));
+    };
+    ## Figure out the minimum error of all of these, and return the
+    ## corresponding matrix:
+    acc <- function(idxs, l) {
+        idx <- idxs[length(idxs)];
+        if (errs[[idx]]$err > l$err)
+            return(c(idxs, l$iter))
+        else
+            return(c(idxs, idx));
+    };
+    iters <- Reduce(acc, errs, c(1));
+    errHist <- sapply(iters, FUN=function(idx) errs[[idx]]$err);
+    minErr <- errs[[iters[length(iters)]]];
+    return(list(err = errHist, mtx = minErr$mtx));
+}
+
 ###########################################################################
 ## Clustering re-projected points
 ###########################################################################

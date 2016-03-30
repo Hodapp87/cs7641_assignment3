@@ -15,7 +15,7 @@ library(mclust);
 library(cluster);
 library(fastICA);
 library(RPEnsemble);
-library(MASS);
+library(FSelector);
 
 source("multiplot.R");
 
@@ -56,15 +56,15 @@ colnames(faults) <- readLines("Faults27x7_var");
 depCol <- c("Pastry", "Z_Scratch", "K_Scatch", "Stains",
             "Dirtiness", "Bumps", "Other_Faults");
 
-## Turn fault labels into a factor (may need this someplace):
-faultFactor <- factor(apply(faultLabels, 1, function(x) which(x == 1)),
-                      labels = depCol);
-
 ## Also standardize data to mean 0, variance 1, separating labels:
 faultsNorm <- data.frame(scale(faults[-which(names(faults) %in% depCol)]))
 faultLabels <- faults[depCol];
 inputNames <- colnames(faultsNorm);
 labelNames <- colnames(faultLabels);
+
+## Turn fault labels into a factor (may need this someplace):
+faultFactor <- factor(apply(faultLabels, 1, function(x) which(x == 1)),
+                      labels = depCol);
 
 ## Load data for "Letter Recognition" data set & apply headers:
 letters <- read.table("letter-recognition.data", sep=",", header=FALSE);
@@ -208,6 +208,150 @@ tryCatch(
         save(lettersDissim, file="lettersDissim.Rda");
     });
 
+## Works, but plots aren't particularly useful:
+## dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
+## clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
+## ggplot(data=clustersHist,
+##        aes(x=bins, y=hist, group=factor(class))) +
+##     geom_line(aes(colour=factor(class))) +
+##     xlab("Distance to cluster center") +
+##     ylab("Cumulative probability") +
+##     ggtitle("Distance distribution in each cluster")
+
+###########################################################################
+## EM
+###########################################################################
+
+
+###########################################################################
+## PCA
+###########################################################################
+
+faultsPca <- prcomp(faultsNorm);
+lettersPca <- prcomp(lettersNorm);
+
+## Given a PCA loading matrix and some (compatible) data, compute the
+## reconstruction error from using just the 1st principal, the first 2
+## principals, first 3, etc. If loading matrix has dimensions PxL,
+## then data must have dimensions NxP.
+reconstrError <- function(mtx, data) {
+    foreach(dims=1:nrow(mtx), .combine='c') %dopar% {
+        mtxR <- as.matrix(mtx[,1:dims]);
+        scores <- as.matrix(data) %*% mtxR
+        reconstr <- scores %*% t(mtxR)
+        return(sum((data - reconstr)^2));
+    }
+}
+
+## Given an object of class "prcomp" and a proportion of energy
+## (default 0.90) to preserve of the total variance, returns the total
+## number of dimensions required to preserve that amount of energy.
+minDimension <- function(pca, energy = 0.90) {
+    ## Find the lower limit of the variance:
+    limit <- sum(pca$sdev^2) * energy;
+    ## Figure out which indices *exceed* this:
+    return(min(which(cumsum(pca$sdev^2) > limit)));
+    ## Those are numbered from 1, so minimum is then all that we need.
+}
+
+###########################################################################
+## fastICA
+###########################################################################
+
+## Given some data input (assumed to already be standardized) and a
+## range of dimensions, performs ICA to the given range of dimensions,
+## and returns reconstruction error (sum of squared error,
+## particularly) as a data frame with columns "dims" for number of
+## dimensions and "err" for reconstruction error.
+icaReconstrError <- function(data, dimRange) {
+    foreach(dims = dimRange, .combine = "rbind") %dopar% {
+        ica <- fastICA(data, dims);
+        A <- as.matrix(ica$A);
+        S <- as.matrix(ica$S);
+        return(data.frame(
+            dims = dims,
+            err = sum(((S %*% A) - data)^2)));
+    };
+}
+
+faultsIca <- foreach(dims=2:26) %dopar% fastICA(faultsNorm, dims);
+lettersIca <- foreach(dims=2:16) %dopar% fastICA(lettersNorm, dims);
+## But how do I get dimensions into here?
+
+###########################################################################
+## Random projections
+###########################################################################
+
+## Rough look-alike to the MATLAB function; generate an m x n matrix
+## with normally-distributed values of mean 0 & variance 1.
+randn <- function(m, n) matrix(rnorm(m*n), m, n);
+
+## Compute pseudoinverse with SVD.
+pinv <- function(mtx) {
+    s <- svd(mtx);
+    return(s$v %*% as.matrix(diag(1 / s$d)) %*% t(s$u));
+};
+
+## Computes reconstruction error for some data, dimension range
+## (dimRange), and number of runs.  Returns a data frame with columns
+## "dims" for number of dimensions, "run" for the run number, and
+## "err" for reconstruction error (as sum of squared error).
+rcaReconstrError <- function(data, dimRange, runs) {
+    foreach(dims=dimRange, .combine = "rbind") %:%
+    foreach(run=1:runs, .combine='rbind') %dopar% {
+        ## I'm not sure how kosher the below math is.
+        ## projMtx <- randn(ncol(data), dims);
+        ## reconstr <- projData %*% pinv(projMtx);
+        projMtx <- RPGenerate(ncol(data), dims);
+        projData <- as.matrix(data) %*% projMtx;
+        reconstr <- projData %*% t(projMtx);
+        return(data.frame(
+            dims = dims,
+            run = run,
+            err = sum((reconstr - data)^2)
+        ));
+    };
+}
+
+###########################################################################
+## Clustering re-projected points
+###########################################################################
+
+## For some data, corresponding output labels, a range of k values to
+## use, and a number of iterations & runs for k-means, performs
+## k-means clustering and computes the average classification error -
+## if treating each cluster as representing the average label of its
+## contents.
+clusterLabelErrFrame <- function(data, labels, ks, iters, runs) {
+    foreach(k=ks, .combine = "rbind") %do% {
+        clusters <- kmeans(data, k, iters, runs);
+        labelsAvg <- clusterPredictErr(clusters, labels);
+        data.frame(k = k,
+                   err = sum(labelsAvg$err) / nrow(labels));
+    }
+}
+
+###########################################################################
+## Neural nets
+###########################################################################
+
+## Given a neural network model from 'mlp' (of RSNNS), create a data
+## frame which stacks the training & testing error.  Column 'idx' is
+## iteration number, 'error' is the sum of squared error, and 'stage'
+## is 'Train' or 'Test'.
+stackError <- function(model)
+{
+    idxs <- seq(1, length(model$IterativeFitError));
+    stacked <- rbind(
+        data.frame(idx=idxs, error=model$IterativeFitError,  stage="Train"),
+        data.frame(idx=idxs, error=model$IterativeTestError, stage="Test"));
+
+    return(stacked);
+}
+
+###########################################################################
+## K-Means outputs
+###########################################################################
 
 ## For both datasets, across a range of k, get within-cluster
 ## sum-of-squared error and average silhouette value.
@@ -270,18 +414,175 @@ local({
     save(kLetters, iters, runs, lettersConfusion, file=fname);
 });
 
-## Works, but plots aren't particularly useful:
-## dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
-## clustersHist <- distHistogram(clusters, faultsNorm, clusters$cluster);
-## ggplot(data=clustersHist,
-##        aes(x=bins, y=hist, group=factor(class))) +
-##     geom_line(aes(colour=factor(class))) +
-##     xlab("Distance to cluster center") +
-##     ylab("Cumulative probability") +
-##     ggtitle("Distance distribution in each cluster")
+###########################################################################
+## CFS or who knows what
+###########################################################################
+## Okay, that's atrocious.
+## faultsFormula <- formula(paste(paste(labelNames, collapse=" + "), " ~ ."));
+
+local({
+    fname <- "cfs.Rda";
+    faultsCfs <- cfs(Class ~ .,
+                     cbind(faultsNorm,
+                           data.frame(Class = faultFactor)));
+
+    save(faultsCfs, file=fname);
+});
 
 ###########################################################################
-## EM
+## Reduced-dimensionality k-means
+###########################################################################
+local({
+    fname <- "kmeansReducedDims.Rda";
+    iters <- 100;
+    runs <- 50;
+
+    ks <- c(20, 80, 250);
+
+    kmeansOrigF <-
+        clusterLabelErrFrame(faultsNorm, faultLabels, ks, iters, runs);
+    kmeansOrigF$test <- "Steel faults";
+    kmeansOrigF$algo <- "None";
+
+    ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
+    
+    ## TODO: Add timing information to this!
+    faultsPca <- prcomp(faultsNorm);
+    pcaKmeansReducedF <-
+        foreach(dims=2:27, .combine = "rbind") %dopar% {
+            mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
+            proj <- as.matrix(faultsNorm) %*% mtxR;
+            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Steel faults";
+            df$algo <- "PCA";
+            return(df);
+        }
+
+    if FALSE {
+    kpcaKmeansReducedF <-
+        foreach(dims=2:27, .combine = "rbind") %dopar% {
+            cat("kpca");
+            cat(dims);
+            cat("..");
+            kpc <- kpca(~., data=faultsNorm, kernel="rbfdot",
+                        kpar=list(sigma=0.1), features=dims);
+            proj <- rotated(kpc);
+            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Steel faults";
+            df$algo <- "k-PCA";
+            return(df);
+        }
+    }
+    
+    icaKmeansReducedF <-
+        foreach(dims=2:26, .combine = "rbind") %dopar% {
+            ica <- fastICA(faultsNorm, dims);
+            A <- as.matrix(ica$A);
+            S <- as.matrix(ica$S);
+            proj <- S %*% A;
+            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Steel faults";
+            df$algo <- "ICA";
+            return(df);
+        }
+
+    cfsKmeansReducedF <- local({
+        faultsCfs <- cfs(Class ~ .,
+                         cbind(faultsNorm,
+                               data.frame(Class = faultFactor)));
+        proj <- faultsNorm[faultsCfs];
+        df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
+        ## Kludge alert (it's to plot properly):
+        df1 <- df;
+        df1$dims <- length(faultsCfs);
+        df2 <- df;
+        df2$dims <- ncol(faultsNorm);
+        df <- rbind(df1, df2);
+        df$test <- "Steel faults";
+        df$algo <- "CFS";
+        return(df);
+    });
+    
+    kmeansOrigL <-
+        clusterLabelErrFrame(lettersNorm, lettersLabels, ks, iters, runs);
+    kmeansOrigL$test <- "Letters";
+    kmeansOrigL$algo <- "None";
+
+    lettersPca <- prcomp(lettersNorm);
+    pcaKmeansReducedL <-
+        foreach(dims=2:16, .combine = "rbind") %dopar% {
+            mtxR <- as.matrix(lettersPca$rotation[,1:dims]);
+            proj <- as.matrix(lettersNorm) %*% mtxR;
+            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Letters";
+            df$algo <- "PCA";
+            return(df);
+        }
+
+    ## This is so slow as to be unusable
+    if FALSE {
+    kpcaKmeansReducedL <-
+        ## %do%, not %dopar%, because this is very memory-intensive:
+        foreach(dims=2:16, .combine = "rbind") %do% {
+            cat("kpca");
+            cat(dims);
+            cat("..");
+            kpc <- kpca(~., data=lettersNorm, kernel="rbfdot",
+                        kpar=list(sigma=0.1), features=dims);
+            proj <- rotated(kpc);
+            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Letters";
+            df$algo <- "k-PCA";
+            return(df);
+        }
+    }
+    
+    icaKmeansReducedL <-
+        foreach(dims=2:16, .combine = "rbind") %dopar% {
+            ica <- fastICA(lettersNorm, dims);
+            A <- as.matrix(ica$A);
+            S <- as.matrix(ica$S);
+            proj <- S %*% A;
+            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Letters";
+            df$algo <- "ICA";
+            return(df);
+        }
+
+    cfsKmeansReducedL <- local({
+        lettersCfs <- cfs(Letter ~ .,
+                          cbind(lettersNorm,
+                                data.frame(Letter = letters$Letter)));
+        proj <- lettersNorm[lettersCfs];
+        df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+        ## Kludge alert (it's to plot properly):
+        df1 <- df;
+        df1$dims <- length(lettersCfs);
+        df2 <- df;
+        df2$dims <- ncol(lettersNorm);
+        df <- rbind(df1, df2);
+        df$test <- "Letters";
+        df$algo <- "CFS";
+        return(df);
+    });
+    
+    kmeansReducedDims <-
+        rbind(pcaKmeansReducedF, icaKmeansReducedF, cfsKmeansReducedF,
+              pcaKmeansReducedL, icaKmeansReducedL, cfsKmeansReducedL);
+    ## TODO: Add 'k' value to this (though that's not present for EM)
+    title <- "Cluster labels on dimension-reduced data";
+    
+    save(kmeansReducedDims, kmeansOrigF, kmeansOrigL, title, file=fname);
+});
+
+###########################################################################
+## EM outputs
 ###########################################################################
 
 ## Build Mclust models for each dataset.  This will be very
@@ -312,48 +613,15 @@ local({
 });
 
 ###########################################################################
-## PCA
+## PCA outputs
 ###########################################################################
 
-faultsPca <- prcomp(faultsNorm);
-lettersPca <- prcomp(lettersNorm);
-faultPcaDf <- data.frame(class = faultFactor, pca = faultsPca$x);
-lettersPcaDf <- data.frame(class = letters$Letter, pca = lettersPca$x);
-save(faultsPca, lettersPca, faultPcaDf, lettersPcaDf, file="pca.Rda");
+local({
+    faultPcaDf <- data.frame(class = faultFactor, pca = faultsPca$x);
+    lettersPcaDf <- data.frame(class = letters$Letter, pca = lettersPca$x);
+    save(faultsPca, lettersPca, faultPcaDf, lettersPcaDf, file="pca.Rda");
+});
 
-ggplot(faultPcaDf) +
-    geom_point(aes(pca.PC1, pca.PC2, colour = class), size = 2) +
-    xlab("PC1") +
-    ylab("PC2")
-
-ggplot(lettersPcaDf) +
-    geom_point(aes(pca.PC1, pca.PC2, colour = class), size = 0.5) +
-    xlab("PC1") +
-    ylab("PC2")
-
-## Given a PCA loading matrix and some (compatible) data, compute the
-## reconstruction error from using just the 1st principal, the first 2
-## principals, first 3, etc. If loading matrix has dimensions PxL,
-## then data must have dimensions NxP.
-reconstrError <- function(mtx, data) {
-    foreach(dims=1:nrow(mtx), .combine='c') %dopar% {
-        mtxR <- as.matrix(mtx[,1:dims]);
-        scores <- as.matrix(data) %*% mtxR
-        reconstr <- scores %*% t(mtxR)
-        return(sum((data - reconstr)^2));
-    }
-}
-
-## Given an object of class "prcomp" and a proportion of energy
-## (default 0.90) to preserve of the total variance, returns the total
-## number of dimensions required to preserve that amount of energy.
-minDimension <- function(pca, energy = 0.90) {
-    ## Find the lower limit of the variance:
-    limit <- sum(pca$sdev^2) * energy;
-    ## Figure out which indices *exceed* this:
-    return(min(which(cumsum(pca$sdev^2) > limit)));
-    ## Those are numbered from 1, so minimum is then all that we need.
-}
 
 ## This might need redone later to compare other reduction techniques
 local({
@@ -397,87 +665,9 @@ ggplot(data=contribStacked,
     geom_line(aes(colour=feature)) +
     xlab("Principal component");
 
-## Reduce the dimensions in PCA:
-dims <- 27;
-pcaMtx <- pca$rotation[,1:dims];
-faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
-clusters <- kmeans(faultsPca, 7, 100);
-labelsAvg <- clusterPredictErr(clusters, faultLabels);
-sum(labelsAvg$err) / nrow(faultLabels);
-
-dimRange <- 1:27;
-kRange <- 2:50;
-iters <- 200;
-runs <- 100;
-t <- system.time(
-    faultsPcaSurface <-
-        foreach(dims=dimRange, .combine='cbind') %:%
-        foreach(k=kRange, .combine='c') %dopar% {
-            pcaMtx <- pca$rotation[,1:dims];
-            faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
-            clusters <- kmeans(faultsPca, k, iters, runs);
-            labelsAvg <- clusterPredictErr(clusters, faultLabels);
-            return(sum(labelsAvg$err) / nrow(faultLabels));
-        })
-print(t);
-rownames(faultsPcaSurface) <- kRange;
-colnames(faultsPcaSurface) <- dimRange;
-
-save(faultsPcaSurface, file = "faultsPcaSurface.Rda");
-persp(faultsPcaSurface, theta = 110, phi = 20, shade=0.6, col="red",
-      xlab = "Clusters (k)", ylab = "# of principals",
-      zlab = "Error rate");
-
-## faultsPcaDf <- stack(data.frame(t(faultsPcaSurface)));
-## faultsPcaDf$pcaDims <- dimRange;
-## ggplot(data=faultsPcaDf,
-##       aes(x=pcaDims, y=values, group=ind)) +
-##    geom_line(aes(colour=ind)) +
-##    xlab("Principal component");
-
-ks <- 1:20;
-dimRange <- 15:27;
-iters <- 50;
-runs <- 20;
-clusterSs <- foreach(k = ks, .combine='rbind') %:%
-    foreach(dims=dimRange, .combine='rbind') %dopar% {
-        pcaMtx <- pca$rotation[,1:dims];
-        faultsPca <- as.matrix(faultsNorm) %*% as.matrix(pcaMtx);
-        clusters <- kmeans(faultsPca, k, iters, runs);
-        return(data.frame(k = k,
-                          dims = dims,
-                          totss = clusters$totss,
-                          tot.withinss = clusters$tot.withinss,
-                          betweenss = clusters$betweenss));
-}
-
-ggplot(data=clusterSs,
-       aes(x=k, y=tot.withinss, group=factor(dims))) +
-    geom_line(aes(colour=factor(dims)));
-
 ###########################################################################
-## fastICA
+## ICA outputs
 ###########################################################################
-
-## Given some data input (assumed to already be standardized) and a
-## range of dimensions, performs ICA to the given range of dimensions,
-## and returns reconstruction error (sum of squared error,
-## particularly) as a data frame with columns "dims" for number of
-## dimensions and "err" for reconstruction error.
-icaReconstrError <- function(data, dimRange) {
-    foreach(dims = dimRange, .combine = "rbind") %dopar% {
-        ica <- fastICA(data, dims);
-        A <- as.matrix(ica$A);
-        S <- as.matrix(ica$S);
-        return(data.frame(
-            dims = dims,
-            err = sum(((S %*% A) - data)^2)));
-    };
-}
-
-faultsIca <- foreach(dims=2:26) %dopar% fastICA(faultsNorm, dims);
-lettersIca <- foreach(dims=2:16) %dopar% fastICA(lettersNorm, dims);
-## But how do I get dimensions into here?
 
 local({
     fname <- "icaReconstrError.Rda";
@@ -500,39 +690,8 @@ local({
 });
 
 ###########################################################################
-## Random projections
+## RCA outputs
 ###########################################################################
-
-## Rough look-alike to the MATLAB function; generate an m x n matrix
-## with normally-distributed values of mean 0 & variance 1.
-randn <- function(m, n) matrix(rnorm(m*n), m, n);
-
-## Compute pseudoinverse with SVD.
-pinv <- function(mtx) {
-    s <- svd(mtx);
-    return(s$v %*% as.matrix(diag(1 / s$d)) %*% t(s$u));
-};
-
-## Computes reconstruction error for some data, dimension range
-## (dimRange), and number of runs.  Returns a data frame with columns
-## "dims" for number of dimensions, "run" for the run number, and
-## "err" for reconstruction error (as sum of squared error).
-rcaReconstrError <- function(data, dimRange, runs) {
-    foreach(dims=dimRange, .combine = "rbind") %:%
-    foreach(run=1:runs, .combine='rbind') %dopar% {
-        ## I'm not sure how kosher the below math is.
-        ## projMtx <- randn(ncol(data), dims);
-        ## reconstr <- projData %*% pinv(projMtx);
-        projMtx <- RPGenerate(ncol(data), dims);
-        projData <- as.matrix(data) %*% projMtx;
-        reconstr <- projData %*% t(projMtx);
-        return(data.frame(
-            dims = dims,
-            run = run,
-            err = sum((reconstr - data)^2)
-        ));
-    };
-}
 
 local({
     fname <- "rcaReconstrError.Rda";
@@ -556,127 +715,62 @@ local({
 });
 
 ###########################################################################
-## LDA
+## MDS (Multidimensional Scaling)
 ###########################################################################
-## Okay, that's atrocious.
-faultsFormula <- formula(paste(paste(labelNames, collapse=" + "), " ~ ."));
-faultsGlm <- glm(faultsFormula, data=cbind(faultsNorm, faultLabels));
-faultsLda <- lda(faultsFormula, cbind(faultsNorm, faultLabels));
+faultsMds <- cmdscale(faultsDissim, 2, eig = TRUE);
+## lettersMds <- cmdscale(lettersDissim, 2, eig = TRUE);
+faultsMdsDf <- data.frame(
+    x = faultsMds$points[, 1],
+    y = faultsMds$points[, 2],
+    class = faultFactor
+);
 
-###########################################################################
-## Clustering re-projected points
-###########################################################################
+ggplot(faultsMdsDf) +
+    geom_point(aes(x, y, colour = class), size = 2);
 
-## For some data, corresponding output labels, a range of k values to
-## use, and a number of iterations & runs for k-means, performs
-## k-means clustering and computes the average classification error -
-## if treating each cluster as representing the average label of its
-## contents.
-clusterLabelErrFrame <- function(data, labels, ks, iters, runs) {
-    foreach(k=ks, .combine = "rbind") %do% {
-        clusters <- kmeans(data, k, iters, runs);
-        labelsAvg <- clusterPredictErr(clusters, labels);
-        data.frame(k = k,
-                   err = sum(labelsAvg$err) / nrow(labels));
-    }
-}
+## Faults data is lower-rank for some reason, so remove one column:
+## rmCol <- c(-1, -2, -3, -4, -5, -6, -7);
+## faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultLabels));
 
-local({
-    fname <- "kmeansReducedDims.Rda";
-    iters <- 100;
-    runs <- 50;
+lettersLda <- lda(Letter ~ .,
+                  cbind(lettersNorm,
+                        data.frame(Letter = letters$Letter)));
 
-    ks <- c(20, 80, 250);
+plda <- predict(object = lettersLda, newdata = lettersNorm);
+dataset <- data.frame(class = letters$Letter,
+                      lda = plda$x);
 
-    kmeansOrigF <-
-        clusterLabelErrFrame(faultsNorm, faultLabels, ks, iters, runs);
-    kmeansOrigF$test <- "Steel faults";
-    kmeansOrigF$algo <- "None";
-
-    ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
-    
-    ## TODO: Add timing information to this!
-    faultsPca <- prcomp(faultsNorm);
-    pcaKmeansReducedF <-
-        foreach(dims=2:27, .combine = "rbind") %dopar% {
-            mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
-            proj <- as.matrix(faultsNorm) %*% mtxR;
-            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
-            df$dims <- dims;
-            df$test <- "Steel faults";
-            df$algo <- "PCA";
-            return(df);
-        }
-    
-    icaKmeansReducedF <-
-        foreach(dims=2:26, .combine = "rbind") %dopar% {
-            ica <- fastICA(faultsNorm, dims);
-            A <- as.matrix(ica$A);
-            S <- as.matrix(ica$S);
-            proj <- S %*% A;
-            df <- clusterLabelErrFrame(proj, faultLabels, ks, iters, runs);
-            df$dims <- dims;
-            df$test <- "Steel faults";
-            df$algo <- "ICA";
-            return(df);
-        }
-
-    kmeansOrigL <-
-        clusterLabelErrFrame(lettersNorm, lettersLabels, ks, iters, runs);
-    kmeansOrigL$test <- "Letters";
-    kmeansOrigL$algo <- "None";
-
-    lettersPca <- prcomp(lettersNorm);
-    pcaKmeansReducedL <-
-        foreach(dims=2:16, .combine = "rbind") %dopar% {
-            mtxR <- as.matrix(lettersPca$rotation[,1:dims]);
-            proj <- as.matrix(lettersNorm) %*% mtxR;
-            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
-            df$dims <- dims;
-            df$test <- "Letters";
-            df$algo <- "PCA";
-            return(df);
-        }
-    
-    icaKmeansReducedL <-
-        foreach(dims=2:16, .combine = "rbind") %dopar% {
-            ica <- fastICA(lettersNorm, dims);
-            A <- as.matrix(ica$A);
-            S <- as.matrix(ica$S);
-            proj <- S %*% A;
-            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
-            df$dims <- dims;
-            df$test <- "Letters";
-            df$algo <- "ICA";
-            return(df);
-        }
-    
-    kmeansReducedDims <-
-        rbind(pcaKmeansReducedF, icaKmeansReducedF, pcaKmeansReducedL,
-              icaKmeansReducedL);
-    ## TODO: Add 'k' value to this (though that's not present for EM)
-    title <- "Cluster labels on dimension-reduced data";
-    
-    save(kmeansReducedDims, kmeansOrigF, kmeansOrigL, title, file=fname);
-});
+p1 <- ggplot(dataset) +
+    geom_point(aes(lda.LD1, lda.LD2, colour = class), size = 2.5)
+print(p1)
 
 ###########################################################################
-## Neural nets
+## Kernel PCA outputs
 ###########################################################################
+kpc <- kpca(~.,
+            data=faultsNorm,
+            kernel="rbfdot",
+            kpar=list(sigma=0.1),
+            features=2);
 
-## Given a neural network model from 'mlp' (of RSNNS), create a data
-## frame which stacks the training & testing error.  Column 'idx' is
-## iteration number, 'error' is the sum of squared error, and 'stage'
-## is 'Train' or 'Test'.
-stackError <- function(model)
-{
-    idxs <- seq(1, length(model$IterativeFitError));
-    stacked <- rbind(
-        data.frame(idx=idxs, error=model$IterativeFitError,  stage="Train"),
-        data.frame(idx=idxs, error=model$IterativeTestError, stage="Test"));
+kpc10 <- kpca(~.,
+              data=faultsNorm,
+              kernel="rbfdot",
+              kpar=list(sigma=0.1),
+              features=10);
 
-    return(stacked);
-}
+faultsKpcaDf <- data.frame(
+    x = rotated(kpc)[, 1],
+    y = rotated(kpc)[, 2],
+    class = faultFactor
+);
+
+ggplot(faultsKpcaDf) +
+    geom_point(aes(x, y, colour = class), size = 2);
+
+###########################################################################
+## Neural net outputs
+###########################################################################
 
 faultsPca <- prcomp(faultsNorm);
 f <- splitTrainingTest(cbind(faultsNorm, faultLabels), 0.8);

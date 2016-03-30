@@ -20,7 +20,7 @@ library(FSelector);
 source("multiplot.R");
 
 ###########################################################################
-## Functions
+## Data Loading & Other Boilerplate
 ###########################################################################
 
 ## Split ratio 'f' for training data, and the rest (1-f) for testing.
@@ -32,10 +32,6 @@ splitTrainingTest <- function(frame, f) {
     test <- frame[-trainIdx,];
     return(list(train = train, test = test));
 }
-
-###########################################################################
-## Data Loading & Other Boilerplate
-###########################################################################
 
 print("Loading & converting data...");
 # pdf("assignment1_plots.pdf");
@@ -444,9 +440,13 @@ stackError <- function(model)
 ## K-Means outputs
 ###########################################################################
 
+###########################################################################
+## K-Means outputs
+###########################################################################
+
 ## For both datasets, across a range of k, get within-cluster
 ## sum-of-squared error and average silhouette value.
-local({
+getKmeansClusters <- function() {
     fname <- "kmeansClusters.Rda";
     ks <- 2:300;
     iters <- 100;
@@ -479,10 +479,10 @@ local({
     xlab <- "k (number of clusters)";
     save(kmeansClusters, title, xlab, ylab, ks, iters, runs, runtime,
          file=fname);
-});
+};
 
 ## Produce a silhouette object to use elsewhere in plots:
-local({
+getKmeansSilhouettes <- function() {
     fname <- "kmeansSilhouettes.Rda";
     kFaults <- 13;
     iters <- 100;
@@ -493,7 +493,7 @@ local({
         "Steel faults, silhouette plot (k-means, k=%d, %d iters, %d runs)",
         kFaults, iters, runs);
     save(kFaults, skFaults, titleFaults, iters, runs, file=fname);
-});
+};
 
 local({
     fname <- "kmeansConfusionMtx.Rda";
@@ -526,7 +526,7 @@ local({
 ###########################################################################
 ## Reduced-dimensionality k-means
 ###########################################################################
-runKmeansReducedDims <- function({
+runKmeansReducedDims <- function() {
     fname <- "kmeansReducedDims.Rda";
     iters <- 100;
     runs <- 50;
@@ -673,7 +673,7 @@ runKmeansReducedDims <- function({
     title <- "Cluster labels on dimension-reduced data";
     
     save(kmeansReducedDims, kmeansOrigF, kmeansOrigL, title, file=fname);
-});
+};
 
 ###########################################################################
 ## EM outputs
@@ -681,7 +681,8 @@ runKmeansReducedDims <- function({
 
 ## Build Mclust models for each dataset.  This will be very
 ## time-consuming.
-local({
+
+getEmClusters <- function() {
     fname <- "emClusters.Rda";
     faultsMcTime <- system.time(
         faultsMc <- Mclust(faultsNorm, 2:500)
@@ -706,7 +707,7 @@ local({
     ylab <- "Average BIC value";
     save(faultsMc, faultsMcTime, faultsEmCc, lettersMc, lettersEmCc,
          lettersMcTime, xlab, ylab, bic, file = fname);
-});
+};
 
 ###########################################################################
 ## PCA outputs
@@ -720,7 +721,7 @@ local({
 
 
 ## This might need redone later to compare other reduction techniques
-local({
+getRcaReconstrErr <- function() {
     fname <- "pcaReconstrError.Rda";
     faultsMtx <- faultsPca$rotation;
     lettersMtx <- lettersPca$rotation;
@@ -737,7 +738,7 @@ local({
     xlab <- "Dimensions";
     ylab <- "Average reconstruction error";
     save(pcaReconstrErr, title, xlab, ylab, file=fname);
-});
+};
 
 ## Now, this might give some notion of the contribution of each
 ## original component up to the indication principal:
@@ -765,7 +766,7 @@ ggplot(data=contribStacked,
 ## ICA outputs
 ###########################################################################
 
-local({
+getRcaReconstrErr <- function() {
     fname <- "icaReconstrError.Rda";
     faultsIcaTime <- system.time(
         faultsIcaErr <- icaReconstrError(faultsNorm, 1:26)
@@ -783,13 +784,47 @@ local({
     ylab <- "Average reconstruction error";
     save(icaReconstrErr, faultsIcaTime, lettersIcaTime, xlab, ylab, title,
          file = fname);
-});
+};
 
 ###########################################################################
 ## RCA outputs
 ###########################################################################
 
-local({
+getRcaErr <- function() {
+    fname <- "rcaErrorCurve.Rda";
+
+    runs <- 20000;
+    faultsRcaTime <- system.time(
+        faultsRcaErr <-
+            foreach (dims = 2:26, .combine = rbind) %dopar% {
+                cat(dims);
+                cat('..');
+                rca <- rcaBestProj(faultsNorm, dims, runs);
+                return(data.frame(iter = 1:length(rca$err),
+                                  err  = rca$err / nrow(faultsNorm),
+                                  dims = dims,
+                                  test = "Steel faults"));
+            }
+    );
+
+    lettersRcaTime <- system.time(
+        lettersRcaErr <-
+            foreach (dims = 2:16, .combine = rbind) %dopar% {
+                cat(dims);
+                cat('..');
+                rca <- rcaBestProj(lettersNorm, dims, runs);
+                return(data.frame(iter = 1:length(rca$err),
+                                  err  = rca$err / nrow(lettersNorm),
+                                  dims = dims,
+                                  test = "Letters"));
+            }
+    );
+
+    rcaErr <- rbind(faultsRcaErr, lettersRcaErr);
+    save(rcaErr, lettersRcaTime, faultsRcaTime, file=fname);
+};
+
+getRcaReconstrErr <- function() {
     fname <- "rcaReconstrError.Rda";
     runs <- 5000;
     faultsRcaTime <- system.time(
@@ -808,7 +843,7 @@ local({
     ylab <- "Average reconstruction error";
     save(rcaReconstrErr, faultsRcaTime, lettersRcaTime, runs, xlab, ylab,
          title, file = fname);
-});
+};
 
 ###########################################################################
 ## MDS (Multidimensional Scaling) or whatever

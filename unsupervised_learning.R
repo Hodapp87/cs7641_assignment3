@@ -371,7 +371,8 @@ rcaReconstrError <- function(data, dimRange, runs) {
 ## dimensions, for the given number of runs, returning a list with
 ## 'err' (a vector of the progressive lowest error across iterations)
 ## and 'mtx' (a projection matrix of size (P, dims) which produced the
-## lowest error).
+## lowest error). Also, due to some idiotic bug in RPGenerate, don't
+## use dims=1.
 rcaBestProj <- function(data, dims, runs) {
     ## Get a list of lists (maybe there's a better way to do this, I
     ## don't really care), each one having 'err' (the reconstruction
@@ -623,7 +624,7 @@ runKmeansReducedDims <- function() {
     kmeansOrigL$algo <- "None";
 
     rcaKmeansReducedL <-
-        foreach(dims=2:26, .combine = "rbind") %do% {
+        foreach(dims=2:16, .combine = "rbind") %do% {
             cat("RCA,L,");
             cat(dims);
             cat("..");
@@ -980,28 +981,37 @@ local({
 });
 
 nnTrain <- function(train, test) {
-    model <- mlp(train,
-                 faultsTrain[labelNames],
-                 size = 30,
-                 learnFuncParams = c(0.6, 0.0),
-                 maxit = 15,
-                 inputsTest = test,
-                 targetsTest = faultsTest[labelNames]);
-    ## Apply to training & test dataset to get errors:
-    trainOutput <- predict(model, train);
-    trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
-    idxs <- apply(trainOutput, 1, which.max);
-    trainCorrect <- sum(idxs == trainIdxs);
-    trainErr <- 1 - trainCorrect / length(trainIdxs);
-    testOutput  <- predict(model, test);
-    testIdxs <- apply(faultsTest[labelNames], 1, which.max);
-    idxs <- apply(testOutput, 1, which.max);
-    testCorrect <- sum(idxs == testIdxs);
-    testErr <- 1 - testCorrect / length(testIdxs);
-    return(data.frame(trainErr, testErr));
+    runs <- 8;
+    errs <- foreach (run = 1:runs, .combine = rbind) %dopar% {
+        model <- mlp(train,
+                     faultsTrain[labelNames],
+                     size = 30,
+                     learnFuncParams = c(0.6, 0.0),
+                     maxit = 15,
+                     inputsTest = test,
+                     targetsTest = faultsTest[labelNames]);
+        ## Apply to training & test dataset to get errors:
+        trainOutput <- predict(model, train);
+        trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
+        idxs <- apply(trainOutput, 1, which.max);
+        trainCorrect <- sum(idxs == trainIdxs);
+        trainErr <- 1 - trainCorrect / length(trainIdxs);
+        testOutput  <- predict(model, test);
+        testIdxs <- apply(faultsTest[labelNames], 1, which.max);
+        idxs <- apply(testOutput, 1, which.max);
+        testCorrect <- sum(idxs == testIdxs);
+        testErr <- 1 - testCorrect / length(testIdxs);
+        return(c(trainErr, testErr));
+    };
+    means <- apply(errs, 1, mean);
+    stdevs <- apply(errs, 1, sd);
+    return(data.frame(trainErr = means[1],
+                      testErr = means[2],
+                      trainErrSd = stdevs[1],
+                      testErrSd = stdevs[2]));
 };
 
-local({
+getNnetError <- function() {
     fname <- "nnetError.Rda"
 
     ## Train another 'reference' net on original data, but with the more
@@ -1012,10 +1022,27 @@ local({
         dims = c(1, 1, d1, d1),
         algo = "N/A",
         error = c(r$trainErr, r$testErr, r$trainErr, r$testErr),
+        errorSd = c(r$trainErrSd, r$testErrSd, r$trainErrSd, r$testErrSd),
         stage = c("Train", "Test", "Train", "Test"));
-        
+
+    rcaNnErr <-
+        foreach (dims = 2:26, .combine = rbind) %do% {
+            cat(dims);
+            cat('..');
+            rcaErr <- rcaBestProj(faultsNorm, dims, 10000);
+            mtx <- as.matrix(rcaErr$mtx);
+            projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtx;
+            projTest <- as.matrix(faultsTest[inputNames]) %*% mtx;
+            err <- nnTrain(projTrain, projTest);
+            return(data.frame(dims = dims,
+                              algo = "RCA",
+                              error = c(err$trainErr, err$testErr),
+                              errorSd = c(err$trainErrSd, err$testErrSd),
+                              stage = c("Train", "Test")));
+        };
+    
     pcaNnErr <-
-        foreach (dims = 1:27, .combine = rbind) %dopar% {
+        foreach (dims = 1:27, .combine = rbind) %do% {
             cat(dims);
             cat('..');
             faultsPca <- prcomp(faultsNorm);
@@ -1026,11 +1053,12 @@ local({
             return(data.frame(dims = dims,
                               algo = "PCA",
                               error = c(err$trainErr, err$testErr),
+                              errorSd = c(err$trainErrSd, err$testErrSd),
                               stage = c("Train", "Test")));
         };
 
     icaNnErr <-
-        foreach (dims = 1:26, .combine = rbind) %dopar% {
+        foreach (dims = 1:26, .combine = rbind) %do% {
             cat(dims);
             cat('..');
             ica <- fastICA(faultsNorm, dims);
@@ -1043,6 +1071,7 @@ local({
             return(data.frame(dims = dims,
                               algo = "ICA",
                               error = c(err$trainErr, err$testErr),
+                              errorSd = c(err$trainErrSd, err$testErrSd),
                               stage = c("Train", "Test")));
         };
 
@@ -1060,10 +1089,11 @@ local({
             dims = c(d0, d0, d1, d1),
             algo = "CFS",
             error = c(err$trainErr, err$testErr, err$trainErr, err$testErr),
+            errorSd = c(err$trainErrSd, err$testErrSd),
             stage = c("Train", "Test", "Train", "Test")));
     });
 
     neuralNetErr <- rbind(pcaNnErr, icaNnErr, cfsNnErr, refErr);
     
     save(neuralNetErr, refErr, file=fname);
-});
+};

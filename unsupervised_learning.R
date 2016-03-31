@@ -23,16 +23,6 @@ source("multiplot.R");
 ## Data Loading & Other Boilerplate
 ###########################################################################
 
-## Split ratio 'f' for training data, and the rest (1-f) for testing.
-## Returns a list with items "train" and "test" containing rows taken,
-## in random order, from "frame".
-splitTrainingTest <- function(frame, f) {
-    trainIdx <- sample(nrow(frame), size=f*nrow(frame));
-    train <- frame[trainIdx,];
-    test <- frame[-trainIdx,];
-    return(list(train = train, test = test));
-}
-
 print("Loading & converting data...");
 # pdf("assignment1_plots.pdf");
 
@@ -81,6 +71,27 @@ lettersNorm <- data.frame(
 ## And turn 'Letter' into a 26-wide binary matrix (columns A-Z):
 lettersLabels <- as.data.frame(model.matrix( ~ 0 + Letter, letters));
 colnames(lettersLabels) <- levels(letters$Letter);
+
+###########################################################################
+## General
+###########################################################################
+
+## Split ratio 'f' for training data, and the rest (1-f) for testing.
+## Returns a list with items "train" and "test" containing rows taken,
+## in random order, from "frame".
+splitTrainingTest <- function(frame, f) {
+    trainIdx <- sample(nrow(frame), size=f*nrow(frame));
+    train <- frame[trainIdx,];
+    test <- frame[-trainIdx,];
+    return(list(train = train, test = test));
+}
+
+## Turn a confusion matrix into an error rate.  It doesn't matter
+## whether targets are on rows and predictions are on columns, or vice
+## versa.
+confusionToError <- function(mtx) {
+    return(1 - sum(diag(mtx)) / sum(mtx));
+}
 
 ###########################################################################
 ## k-means
@@ -186,8 +197,29 @@ clusterConfusionMatrix <- function(clusters, labels) {
     ## TODO: Not just reimplement confusionMatrix above.
     rownames(conf) <- conf$argmax;
     conf$argmax <- NULL;
-    return(conf);
-}
+    return(as.matrix(conf));
+};
+
+## Given a confusion matrix (assuming that each column indicates a
+## target - that is, that the row names refer to targets), return a
+## data frame with column 'target' containing each target, 'nearest'
+## containing the incorrect prediction that is most likely, and
+## 'nearestRatio' giving how likely that incorrect prediction is.
+getNearest <- function(confMtx) {
+    d <- diag(confMtx);
+    ## First, remove the main diagonal from the matrix, as that is the
+    ## "correct" predictions:
+    confWrong <- confMtx - diag(d);
+    ## Find max & argmax within each column; this is the nearest
+    ## incorrect prediction.
+    nearestCount <- apply(confWrong, 2, max);
+    nearestIdx <- apply(confWrong, 2, which.max);
+    ## Reference 'nearestIdx' into the row names to get a name, and
+    ## also divide count by column sums to get a ratio:
+    return(data.frame(target = rownames(confWrong),
+                      nearest = rownames(confWrong)[nearestIdx],
+                      nearestRatio = nearestCount / colSums(confMtx)));
+};
 
 ## Generate dissimilarity matrices for steel faults:
 tryCatch(
@@ -270,8 +302,13 @@ emConfusion <- function(mclust, labels) {
     };
     correct <- getFactor(labels);
     predicted <- getFactor(emLabels);
-    return(confusionMatrix(correct, predicted));
-}
+    ## Transpose this to make it consistent with other spots:
+    cm <- t(confusionMatrix(correct, predicted));
+    ## and get proper row & column names (or just nothing):
+    rownames(cm) <- colnames(labels);
+    colnames(cm) <- colnames(labels);
+    return(cm);
+};
 
 ###########################################################################
 ## PCA
@@ -494,12 +531,16 @@ getKmeansSilhouettes <- function() {
 
 getKmeansConfusionMtx <- function() {
     fname <- "kmeansConfusionMtx.Rda";
+    kFaults <- 200;
     kLetters <- 200;
     iters <- 100;
     runs <- 50;
-    clusters <- kmeans(lettersNorm, kLetters, iters, runs);
-    lettersConfusion <- clusterConfusionMatrix(clusters, lettersLabels);
-    save(kLetters, iters, runs, lettersConfusion, file=fname);
+    clustersF <- kmeans(faultsNorm, kLetters, iters, runs);
+    clustersL <- kmeans(lettersNorm, kLetters, iters, runs);
+    faultsConfusion <- clusterConfusionMatrix(clustersF, faultsLabels);
+    lettersConfusion <- clusterConfusionMatrix(clustersL, lettersLabels);
+    save(kLetters, kFaults, iters, runs, faultsConfusion,
+         lettersConfusion, file=fname);
 };
 
 ###########################################################################
@@ -508,17 +549,34 @@ getKmeansConfusionMtx <- function() {
 ## Okay, that's atrocious.
 ## faultsFormula <- formula(paste(paste(labelNames, collapse=" + "), " ~ ."));
 
-local({
-    fname <- "cfs.Rda";
-    faultsCfs <- cfs(Class ~ .,
-                     cbind(faultsNorm,
-                           data.frame(Class = faultFactor)));
-    lettersCfs <- cfs(Letter ~ .,
-                      cbind(lettersNorm,
-                            data.frame(Letter = letters$Letter)));
+getCfsReconstrErr <- function() {
+    fname <- "cfsReconstrError.Rda";
+    faultsCfsTime <- system.time(
+        faultsCfs <- cfs(Class ~ .,
+                         cbind(faultsNorm,
+                               data.frame(Class = faultFactor)))
+    );
+    lettersCfsTime <- system.time(
+        lettersCfs <- cfs(Letter ~ .,
+                          cbind(lettersNorm,
+                                data.frame(Letter = letters$Letter)))
+    );
 
-    save(faultsCfs, lettersCfs, file=fname);
-});
+    faultsCfsErr <- data.frame(
+        dims = c(1, ncol(faultsNorm)),
+        err = sum((faultsNorm[-which(names(faultsNorm) %in% faultsCfs)])^2)
+    );
+
+    lettersCfsErr <- data.frame(
+        dims = c(1, ncol(lettersNorm)),
+        err = sum((lettersNorm[-which(names(lettersNorm) %in% lettersCfs)])^2)
+    );
+
+    cfsReconstrErr <- rbind(faultsCfsErr, lettersCfsErr);
+    
+    save(cfsReconstrErr, faultsCfs, faultsCfsTime, faultsCfsErr,
+         lettersCfs, lettersCfsTime, lettersCfsErr, file=fname);
+};
 
 ###########################################################################
 ## Reduced-dimensionality k-means
@@ -528,21 +586,25 @@ runKmeansReducedDims <- function() {
     iters <- 100;
     runs <- 50;
 
-    ks <- c(20, 80, 250);
+    rcaRuns <- 5000;
+    
+    ks <- c(128);
 
-    kmeansOrigF <-
+    origErr <-
         clusterLabelErrFrame(faultsNorm, faultsLabels, ks, iters, runs);
-    kmeansOrigF$test <- "Steel faults";
-    kmeansOrigF$algo <- "None";
-
-    ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
+    ## Note the dimension range here; that is for the sake of plotting.
+    kmeansOrigF <- data.frame(test = "Steel faults",
+                              algo = "N/A",
+                              dims = c(1, ncol(faultsNorm)),
+                              err = origErr$err,
+                              k = ks);
 
     rcaKmeansReducedF <-
         foreach(dims=2:26, .combine = "rbind") %do% {
             cat("RCA,F,");
             cat(dims);
             cat("..");
-            rcaErr <- rcaBestProj(faultsNorm, dims, 10000);
+            rcaErr <- rcaBestProj(faultsNorm, dims, rcaRuns);
             mtx <- as.matrix(rcaErr$mtx);
             proj <- as.matrix(faultsNorm) %*% mtx;
             df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
@@ -618,17 +680,22 @@ runKmeansReducedDims <- function() {
         return(df);
     });
 
-    kmeansOrigL <-
+    ks <- c(200);
+    origErr <-
         clusterLabelErrFrame(lettersNorm, lettersLabels, ks, iters, runs);
-    kmeansOrigL$test <- "Letters";
-    kmeansOrigL$algo <- "None";
+    ## Note the dimension range here; that is for the sake of plotting.
+    kmeansOrigL <- data.frame(test = "Letters",
+                              algo = "N/A",
+                              dims = c(1, ncol(lettersNorm)),
+                              err = origErr$err,
+                              k = ks);
 
     rcaKmeansReducedL <-
         foreach(dims=2:16, .combine = "rbind") %do% {
             cat("RCA,L,");
             cat(dims);
             cat("..");
-            rcaErr <- rcaBestProj(lettersNorm, dims, 10000);
+            rcaErr <- rcaBestProj(lettersNorm, dims, rcaRuns);
             mtx <- as.matrix(rcaErr$mtx);
             proj <- as.matrix(lettersNorm) %*% mtx;
             df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
@@ -706,13 +773,15 @@ runKmeansReducedDims <- function() {
     });
     
     kmeansReducedDims <-
-        rbind(pcaKmeansReducedF, icaKmeansReducedF, cfsKmeansReducedF,
-              rcaKmeansReducedF, pcaKmeansReducedL, icaKmeansReducedL,
-              rcaKmeansReducedL, cfsKmeansReducedL);
+        rbind(kmeansOrigF, kmeansOrigL, pcaKmeansReducedF,
+              icaKmeansReducedF, cfsKmeansReducedF, rcaKmeansReducedF,
+              pcaKmeansReducedL, icaKmeansReducedL, rcaKmeansReducedL,
+              cfsKmeansReducedL);
     ## TODO: Add 'k' value to this (though that's not present for EM)
     title <- "Cluster labels on dimension-reduced data";
     
-    save(kmeansReducedDims, kmeansOrigF, kmeansOrigL, title, file=fname);
+    save(kmeansReducedDims, rcaRuns, ks, iters, runs, title,
+         file=fname);
 };
 
 ###########################################################################
@@ -736,11 +805,23 @@ getEmClusters <- function() {
     #lettersMcTime <- system.time(
     #    lettersMc <- Mclust(lettersNorm, 2:100)
     #);
+    ## These were run separately because it takes so damn long:
     load("lettersMc.Rda");
+    load("lettersMc2.Rda");
+    ## So, combine them together...
+    lettersBicMtx <- as.data.frame(rbind(lettersMc$BIC, lettersMcPt2$BIC));
+    ## and then find the max (which is a BIC) & argmax (which is a
+    ## model, EII/VII/EEI/etc.) within each row:
+    m <- apply(lettersBicMtx, 1, function(x) max(x, na.rm = TRUE));
+    lettersBicMtx$bestModel <- factor(
+        apply(lettersBicMtx, 1, which.max),
+        levels = 1:ncol(lettersBicMtx),
+        labels = colnames(lettersBicMtx));
+    lettersBicMtx$bestBic <- m;
     lettersBic <- data.frame(
-        bic = lettersMc$BIC[,"EII"] / nrow(lettersNorm),
-        numClusters = strtoi(names(lettersMc$BIC[,"EII"])),
-        test = "Letters")
+        bic = lettersBicMtx$bestBic / nrow(lettersNorm),
+        numClusters = strtoi(rownames(lettersBicMtx)),
+        test = "Letters");
     lettersEmCc <- emConfusion(lettersMc, lettersLabels);
     bic <- rbind(faultsBic, lettersBic);
     xlab <- "Number of clusters";
@@ -758,7 +839,6 @@ local({
     lettersPcaDf <- data.frame(class = letters$Letter, pca = lettersPca$x);
     save(faultsPca, lettersPca, faultPcaDf, lettersPcaDf, file="pca.Rda");
 });
-
 
 ## This might need redone later to compare other reduction techniques
 getPcaReconstrErr <- function() {
@@ -981,7 +1061,7 @@ local({
 });
 
 nnTrain <- function(train, test) {
-    runs <- 8;
+    runs <- 20;
     errs <- foreach (run = 1:runs, .combine = rbind) %dopar% {
         model <- mlp(train,
                      faultsTrain[labelNames],
@@ -1093,7 +1173,11 @@ getNnetError <- function() {
             stage = c("Train", "Test", "Train", "Test")));
     });
 
-    neuralNetErr <- rbind(pcaNnErr, icaNnErr, cfsNnErr, refErr);
+    neuralNetErr <- rbind(rcaNnErr, pcaNnErr, icaNnErr, cfsNnErr, refErr);
     
     save(neuralNetErr, refErr, file=fname);
 };
+
+## To run before going to bed:
+getNnetError();
+runKmeansReducedDims();

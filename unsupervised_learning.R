@@ -49,8 +49,8 @@ inputNames <- colnames(faultsNorm);
 labelNames <- colnames(faultsLabels);
 
 ## Turn fault labels into a factor (may need this someplace):
-faultFactor <- factor(apply(faultsLabels, 1, function(x) which(x == 1)),
-                      labels = depCol);
+faultsFactor <- factor(apply(faultsLabels, 1, function(x) which(x == 1)),
+                       labels = depCol);
 
 ## Split training & test:
 tt <- splitTrainingTest(cbind(faultsNorm, faultsLabels), 0.8);
@@ -539,8 +539,8 @@ getKmeansConfusionMtx <- function() {
     clustersL <- kmeans(lettersNorm, kLetters, iters, runs);
     faultsConfusion <- clusterConfusionMatrix(clustersF, faultsLabels);
     lettersConfusion <- clusterConfusionMatrix(clustersL, lettersLabels);
-    save(kLetters, kFaults, iters, runs, faultsConfusion,
-         lettersConfusion, file=fname);
+    save(kLetters, kFaults, clustersF, clustersL, iters, runs,
+         faultsConfusion, lettersConfusion, file=fname);
 };
 
 ###########################################################################
@@ -554,7 +554,7 @@ getCfsReconstrErr <- function() {
     faultsCfsTime <- system.time(
         faultsCfs <- cfs(Class ~ .,
                          cbind(faultsNorm,
-                               data.frame(Class = faultFactor)))
+                               data.frame(Class = faultsFactor)))
     );
     lettersCfsTime <- system.time(
         lettersCfs <- cfs(Letter ~ .,
@@ -588,7 +588,7 @@ runKmeansReducedDims <- function() {
 
     rcaRuns <- 5000;
     
-    ks <- c(128);
+    ks <- c(200);
 
     origErr <-
         clusterLabelErrFrame(faultsNorm, faultsLabels, ks, iters, runs);
@@ -666,7 +666,7 @@ runKmeansReducedDims <- function() {
     cfsKmeansReducedF <- local({
         faultsCfs <- cfs(Class ~ .,
                          cbind(faultsNorm,
-                               data.frame(Class = faultFactor)));
+                               data.frame(Class = faultsFactor)));
         proj <- faultsNorm[faultsCfs];
         df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
         ## Kludge alert (it's to plot properly):
@@ -830,12 +830,85 @@ getEmClusters <- function() {
          lettersMcTime, xlab, ylab, bic, file = fname);
 };
 
+getOptimalReducedClusters <- function() {
+    fname <- "optimalReducedClusters.Rda";
+    iters <- 100;
+    runs <- 50;
+    rcaRuns <- 5000;
+    kFaults <- c(200);
+    kLetters <- c(200);
+    faultsPcaDims <- 10;
+    faultsIcaDims <- 10;
+    faultsRcaDims <- 14;
+    lettersPcaDims <- 10;
+    lettersIcaDims <- 10;
+    lettersRcaDims <- 13;
+
+    print("Faults PCA...");
+    faultsPcaTime <- system.time(faultsPca <- prcomp(faultsNorm));
+    mtxR <- as.matrix(faultsPca$rotation[,1:faultsPcaDims]);
+    faultsPcaClusters <- kmeans(as.matrix(faultsNorm) %*% mtxR,
+                                kFaults, iters, runs);
+
+    print("Faults ICA...");
+    faultsIcaTime <- system.time(
+        faultsIca <- fastICA(faultsNorm, faultsIcaDims));
+    faultsIcaClusters <- kmeans(faultsIca$S, kFaults, iters, runs);
+
+    print("Faults RCA...");
+    faultsRcaTime <- system.time(
+        faultsRca <- rcaBestProj(faultsNorm, faultsRcaDims, rcaRuns));
+    faultsRcaClusters <- kmeans(
+        as.matrix(faultsNorm) %*% as.matrix(faultsRca$mtx),
+        kFaults, iters, runs);
+
+    print("Faults CFS...");
+    faultsCfsTime <- system.time(
+        faultsCfs <- cfs(Class ~ .,
+                         cbind(faultsNorm, data.frame(Class = faultsFactor))));
+    faultsCfsClusters <-
+        kmeans(faultsNorm[faultsCfs], kFaults, iters, runs);
+    
+    print("Letters PCA...");
+    lettersPcaTime <- system.time(lettersPca <- prcomp(lettersNorm));
+    mtxR <- as.matrix(lettersPca$rotation[,1:lettersPcaDims]);
+    lettersPcaClusters <- kmeans(as.matrix(lettersNorm) %*% mtxR,
+                                 kLetters, iters, runs);
+
+    print("Letters ICA...");
+    lettersIcaTime <- system.time(
+        lettersIca <- fastICA(lettersNorm, lettersIcaDims));
+    lettersIcaClusters <- kmeans(lettersIca$S, kLetters, iters, runs);
+
+    print("Letters RCA...");
+    lettersRcaTime <- system.time(
+        lettersRca <- rcaBestProj(lettersNorm, lettersRcaDims, rcaRuns));
+    lettersRcaClusters <- kmeans(
+        as.matrix(lettersNorm) %*% as.matrix(lettersRca$mtx),
+        kLetters, iters, runs);
+
+    print("Letters CFS...");
+    lettersCfsTime <- system.time(
+        lettersCfs <- cfs(Class ~ .,
+                          cbind(lettersNorm,
+                                data.frame(Class = letters$Letter))));
+    lettersCfsClusters <-
+        kmeans(lettersNorm[lettersCfs], kLetters, iters, runs);
+    
+    save(faultsPcaClusters, faultsPcaTime, faultsIcaClusters,
+         faultsIcaTime, faultsRcaClusters, faultsRcaTime,
+         faultsCfsClusters, faultsCfsTime, lettersPcaClusters,
+         lettersPcaTime, lettersIcaClusters, lettersIcaTime,
+         lettersRcaClusters, lettersRcaTime, lettersCfsClusters,
+         lettersCfsTime, file=fname);
+};
+
 ###########################################################################
 ## PCA outputs
 ###########################################################################
 
 local({
-    faultPcaDf <- data.frame(class = faultFactor, pca = faultsPca$x);
+    faultPcaDf <- data.frame(class = faultsFactor, pca = faultsPca$x);
     lettersPcaDf <- data.frame(class = letters$Letter, pca = lettersPca$x);
     save(faultsPca, lettersPca, faultPcaDf, lettersPcaDf, file="pca.Rda");
 });
@@ -974,7 +1047,7 @@ failedTests <- function() {
     faultsMdsDf <- data.frame(
         x = faultsMds$points[, 1],
         y = faultsMds$points[, 2],
-        class = faultFactor
+        class = faultsFactor
     );
 
     ggplot(faultsMdsDf) +
@@ -1011,7 +1084,7 @@ failedTests <- function() {
     faultsKpcaDf <- data.frame(
         x = rotated(kpc)[, 1],
         y = rotated(kpc)[, 2],
-        class = faultFactor
+        class = faultsFactor
     );
 
     ggplot(faultsKpcaDf) +
@@ -1158,7 +1231,7 @@ getNnetError <- function() {
     cfsNnErr <- local({
         faultsCfs <- cfs(Class ~ .,
                          cbind(faultsNorm,
-                               data.frame(Class = faultFactor)));
+                               data.frame(Class = faultsFactor)));
         projTrain <- faultsTrain[faultsCfs];
         projTest <- faultsTest[faultsCfs];
         err <- nnTrain(projTrain, projTest);

@@ -535,11 +535,29 @@ runKmeansReducedDims <- function() {
     kmeansOrigF$algo <- "None";
 
     ##origClusters <- kmeans(faultsNorm, kFaults, iters, runs);
+
+    rcaKmeansReducedF <-
+        foreach(dims=2:26, .combine = "rbind") %do% {
+            cat("RCA,F,");
+            cat(dims);
+            cat("..");
+            rcaErr <- rcaBestProj(faultsNorm, dims, 10000);
+            mtx <- as.matrix(rcaErr$mtx);
+            proj <- as.matrix(faultsNorm) %*% mtx;
+            df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Steel faults";
+            df$algo <- "RCA";
+            return(df);
+        }
     
     ## TODO: Add timing information to this!
     faultsPca <- prcomp(faultsNorm);
     pcaKmeansReducedF <-
         foreach(dims=2:27, .combine = "rbind") %dopar% {
+            cat("PCA,F,");
+            cat(dims);
+            cat("..");
             mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
             proj <- as.matrix(faultsNorm) %*% mtxR;
             df <- clusterLabelErrFrame(proj, faultsLabels, ks, iters, runs);
@@ -568,6 +586,9 @@ runKmeansReducedDims <- function() {
     
     icaKmeansReducedF <-
         foreach(dims=2:26, .combine = "rbind") %dopar% {
+            cat("ICA,F,");
+            cat(dims);
+            cat("..");
             ica <- fastICA(faultsNorm, dims);
             ##A <- as.matrix(ica$A);
             ##S <- as.matrix(ica$S);
@@ -595,15 +616,33 @@ runKmeansReducedDims <- function() {
         df$algo <- "CFS";
         return(df);
     });
-    
+
     kmeansOrigL <-
         clusterLabelErrFrame(lettersNorm, lettersLabels, ks, iters, runs);
     kmeansOrigL$test <- "Letters";
     kmeansOrigL$algo <- "None";
 
+    rcaKmeansReducedL <-
+        foreach(dims=2:26, .combine = "rbind") %do% {
+            cat("RCA,L,");
+            cat(dims);
+            cat("..");
+            rcaErr <- rcaBestProj(lettersNorm, dims, 10000);
+            mtx <- as.matrix(rcaErr$mtx);
+            proj <- as.matrix(lettersNorm) %*% mtx;
+            df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
+            df$dims <- dims;
+            df$test <- "Letters";
+            df$algo <- "RCA";
+            return(df);
+        }
+    
     lettersPca <- prcomp(lettersNorm);
     pcaKmeansReducedL <-
         foreach(dims=2:16, .combine = "rbind") %dopar% {
+            cat("PCA,L,");
+            cat(dims);
+            cat("..");
             mtxR <- as.matrix(lettersPca$rotation[,1:dims]);
             proj <- as.matrix(lettersNorm) %*% mtxR;
             df <- clusterLabelErrFrame(proj, lettersLabels, ks, iters, runs);
@@ -634,6 +673,9 @@ runKmeansReducedDims <- function() {
     
     icaKmeansReducedL <-
         foreach(dims=2:16, .combine = "rbind") %dopar% {
+            cat("ICA,L,");
+            cat(dims);
+            cat("..");
             ica <- fastICA(lettersNorm, dims);
             ##A <- as.matrix(ica$A);
             ##S <- as.matrix(ica$S);
@@ -664,7 +706,8 @@ runKmeansReducedDims <- function() {
     
     kmeansReducedDims <-
         rbind(pcaKmeansReducedF, icaKmeansReducedF, cfsKmeansReducedF,
-              pcaKmeansReducedL, icaKmeansReducedL, cfsKmeansReducedL);
+              rcaKmeansReducedF, pcaKmeansReducedL, icaKmeansReducedL,
+              rcaKmeansReducedL, cfsKmeansReducedL);
     ## TODO: Add 'k' value to this (though that's not present for EM)
     title <- "Cluster labels on dimension-reduced data";
     

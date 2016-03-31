@@ -440,10 +440,6 @@ stackError <- function(model)
 ## K-Means outputs
 ###########################################################################
 
-###########################################################################
-## K-Means outputs
-###########################################################################
-
 ## For both datasets, across a range of k, get within-cluster
 ## sum-of-squared error and average silhouette value.
 getKmeansClusters <- function() {
@@ -495,7 +491,7 @@ getKmeansSilhouettes <- function() {
     save(kFaults, skFaults, titleFaults, iters, runs, file=fname);
 };
 
-local({
+getKmeansConfusionMtx <- function() {
     fname <- "kmeansConfusionMtx.Rda";
     kLetters <- 200;
     iters <- 100;
@@ -503,7 +499,7 @@ local({
     clusters <- kmeans(lettersNorm, kLetters, iters, runs);
     lettersConfusion <- clusterConfusionMatrix(clusters, lettersLabels);
     save(kLetters, iters, runs, lettersConfusion, file=fname);
-});
+};
 
 ###########################################################################
 ## CFS or who knows what
@@ -721,7 +717,7 @@ local({
 
 
 ## This might need redone later to compare other reduction techniques
-getRcaReconstrErr <- function() {
+getPcaReconstrErr <- function() {
     fname <- "pcaReconstrError.Rda";
     faultsMtx <- faultsPca$rotation;
     lettersMtx <- lettersPca$rotation;
@@ -766,7 +762,7 @@ ggplot(data=contribStacked,
 ## ICA outputs
 ###########################################################################
 
-getRcaReconstrErr <- function() {
+getIcaReconstrErr <- function() {
     fname <- "icaReconstrError.Rda";
     faultsIcaTime <- system.time(
         faultsIcaErr <- icaReconstrError(faultsNorm, 1:26)
@@ -796,7 +792,7 @@ getRcaErr <- function() {
     runs <- 20000;
     faultsRcaTime <- system.time(
         faultsRcaErr <-
-            foreach (dims = 2:26, .combine = rbind) %dopar% {
+            foreach (dims = 2:26, .combine = rbind) %do% {
                 cat(dims);
                 cat('..');
                 rca <- rcaBestProj(faultsNorm, dims, runs);
@@ -809,7 +805,7 @@ getRcaErr <- function() {
 
     lettersRcaTime <- system.time(
         lettersRcaErr <-
-            foreach (dims = 2:16, .combine = rbind) %dopar% {
+            foreach (dims = 2:16, .combine = rbind) %do% {
                 cat(dims);
                 cat('..');
                 rca <- rcaBestProj(lettersNorm, dims, runs);

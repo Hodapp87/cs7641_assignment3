@@ -1301,13 +1301,21 @@ getNnetClusterLearningCurve <- function() {
     ## generated, since we end up with exactly the same number of instances.
 
     runMlp <- function(train, test) {
-        mlp(train,
-            faultsTrain[labelNames],
-            size = 30,
-            learnFuncParams = c(0.6, 0.0),
-            maxit = 200,
-            inputsTest = test,
-            targetsTest = faultsTest[labelNames]);
+        runs <- 20;
+        err <- foreach(run = 1:runs, .combine="rbind") %dopar% {
+            cat(run);
+            cat("..");
+            model <- mlp(train,
+                         faultsTrain[labelNames],
+                         size = 30,
+                         learnFuncParams = c(0.6, 0.0),
+                         maxit = 200,
+                         inputsTest = test,
+                         targetsTest = faultsTest[labelNames]);
+            return(stackError(model));
+        };
+        err <- aggregate(err ~ stage + idx, err, mean);
+        errSd <- aggregate(err ~ stage + idx, err, mean);
     };
 
     ## Is there some better way to do this?
@@ -1325,7 +1333,7 @@ getNnetClusterLearningCurve <- function() {
         ##list(CFS=faultsEm$cfs,      type="em")
         );
     
-    nnetClusterLearningCurve <- foreach(input=inputs, .combine="rbind") %dopar% {
+    nnetClusterLearningCurve <- foreach(input=inputs, .combine="rbind") %do% {
         algo <- names(input)[1];
         cat(names(input)[1]);
         cat(".");
@@ -1341,15 +1349,13 @@ getNnetClusterLearningCurve <- function() {
         train <- cl[trainIdxs,];
         test <- cl[-trainIdxs,];
         ## Test with just the cluster labels as inputs:
-        model <- runMlp(train, test);
-        err1 <- stackError(model);
+        err1 <- runMlp(train, test);
         err1$algo <- algo;
         err1$inputs <- "Clusters";
         err1$type <- input$type;
         ## And with the cluster labels *and* normal inputs:
-        model <- runMlp(cbind(train, faultsTrain[inputNames]),
+        err2 <- runMlp(cbind(train, faultsTrain[inputNames]),
                         cbind(test,  faultsTest[inputNames]));
-        err2 <- stackError(model);
         err2$algo <- algo;
         err2$inputs <- "Both";
         err2$type <- input$type;
@@ -1357,8 +1363,7 @@ getNnetClusterLearningCurve <- function() {
     };
 
     ## Get 'reference' error too from original data
-    model <- runMlp(faultsTrain[inputNames], faultsTest[inputNames]);
-    refErr <- stackError(model);
+    refErr <- runMlp(faultsTrain[inputNames], faultsTest[inputNames]);
     refErr$algo <- "N/A";
     refErr$inputs <- "N/A";
     refErr$type <- "N/A";
@@ -1419,8 +1424,8 @@ getNnetClusterErrs <- function() {
         err1$type <- input$type;
         ## Test using the cluster labels *and* normal inputs:
         err2 <- nnTrain(cbind(train, faultsTrain[inputNames]),
-                         cbind(test,  faultsTest[inputNames]),
-                         50);
+                        cbind(test,  faultsTest[inputNames]),
+                        50);
         err2$inputs <- "Both";
         err2$algo <- algo;
         err2$type <- input$type;

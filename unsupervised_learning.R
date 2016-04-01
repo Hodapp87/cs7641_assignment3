@@ -1314,9 +1314,9 @@ getNnetClusterLearningCurve <- function() {
                          targetsTest = faultsTest[labelNames]);
             return(stackError(model));
         };
-        err <- aggregate(err ~ stage + idx, err, mean);
+        errMean <- aggregate(err ~ stage + idx, err, mean);
         errSd <- aggregate(err ~ stage + idx, err, mean);
-        return(err);
+        return(errMean);
     };
 
     ## Is there some better way to do this?
@@ -1442,4 +1442,4 @@ getNnetClusterErrs <- function() {
 ## runKmeansReducedDims();
 ## getNnetError();
 getNnetClusterLearningCurve();
-getNnetClusterErrs();
+## getNnetClusterErrs();

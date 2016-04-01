@@ -1162,7 +1162,7 @@ getNnetLearning <- function(){
 
 ## This is specific to the steel faults data set:
 nnTrain <- function(train, test, maxit) {
-    runs <- 4;
+    runs <- 20;
     errs <- foreach (run = 1:runs, .combine = rbind) %dopar% {
         cat(run);
         cat(".");
@@ -1307,17 +1307,27 @@ getNnetClusterLearningCurve <- function() {
 
     ## Is there some better way to do this?
     inputs <- list(
-        list(PCA=faultsPcaClusters),
-        list(ICA=faultsIcaClusters),
-        list(RCA=faultsRcaClusters),
-        list(CFS=faultsCfsClusters));
+        list(PCA=faultsPcaClusters, type="k"),
+        list(ICA=faultsIcaClusters, type="k"),
+        list(RCA=faultsRcaClusters, type="k"),
+        list(CFS=faultsCfsClusters, type="k"),
+        list(PCA=faultsEm$pca,      type="em"),
+        list(RCA=faultsEm$rca,      type="em"),
+        list(ICA=faultsEm$ica,      type="em"),
+        list(CFS=faultsEm$cfs,      type="em")
+        );
     
-    nnetClusterLearningCurve <- foreach(input=inputs, .combine="rbind") %do% {
+    nnetClusterLearningCurve <- foreach(input=inputs, .combine="rbind") %dopar% {
         algo <- names(input)[1];
         cat(names(input)[1]);
         cat(".");
-        ## Turn class labels into a binary vector:
-        cl <- decodeClassLabels(input[[1]]$cluster);
+        if (input$type == "k") {
+            ## Turn class labels into a binary vector:
+            cl <- decodeClassLabels(input[[1]]$cluster);
+        } else {
+            ## EM's probabilities are already in the form we need:
+            cl <- input[[1]]$z;
+        }
         cat(".");
         ## Split into training & test sets:
         train <- cl[trainIdxs,];
@@ -1327,12 +1337,14 @@ getNnetClusterLearningCurve <- function() {
         err1 <- stackError(model);
         err1$algo <- algo;
         err1$inputs <- "Clusters";
+        err1$type <- input$type;
         ## And with the cluster labels *and* normal inputs:
         model <- runMlp(cbind(train, faultsTrain[inputNames]),
                         cbind(test,  faultsTest[inputNames]));
         err2 <- stackError(model);
         err2$algo <- algo;
         err2$inputs <- "Both";
+        err2$type <- input$type;
         return(rbind(err1, err2));
     };
 
@@ -1340,7 +1352,8 @@ getNnetClusterLearningCurve <- function() {
     model <- runMlp(faultsTrain[inputNames], faultsTest[inputNames]);
     refErr <- stackError(model);
     refErr$algo <- "N/A";
-    refErr$inputs <- "Both";
+    refErr$inputs <- "N/A";
+    refErr$type <- "N/A";
     nnetClusterLearningCurve <- rbind(nnetClusterLearningCurve, refErr);
     
     save(nnetClusterLearningCurve, file=fname);
@@ -1357,6 +1370,7 @@ getNnetClusterErrs <- function() {
 
     ref <- nnTrain(faultsTrain[inputNames], faultsTest[inputNames], 30);
     ref$algo <- "N/A";
+    ref$inputs <- "Both";
     
     ## Is there some better way to do this?
     inputs <- list(
@@ -1381,11 +1395,11 @@ getNnetClusterErrs <- function() {
         err1$inputs <- "Clusters";
         err1$algo <- algo;
         ## Test using the cluster labels *and* normal inputs:
-        model <- nnTrain(cbind(train, faultsTrain[inputNames]),
+        err2 <- nnTrain(cbind(train, faultsTrain[inputNames]),
                          cbind(test,  faultsTest[inputNames]),
                          50);
-        err2$algo <- algo;
         err2$inputs <- "Both";
+        err2$algo <- algo;
         cat(".");
         return(rbind(err1, err2));
     };
@@ -1396,3 +1410,6 @@ getNnetClusterErrs <- function() {
 
 ## To run before going to bed:
 ## runKmeansReducedDims();
+## getNnetError();
+getNnetClusterLearningCurve();
+## getNnetClusterErrs();

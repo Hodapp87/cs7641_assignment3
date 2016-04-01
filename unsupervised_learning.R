@@ -991,6 +991,14 @@ contribStacked$ind <- strtoi(substring(contribStacked$ind, 2));
 ## ICA outputs
 ###########################################################################
 
+local({
+    faultsIca <- fastICA(faultsNorm, 2);
+    lettersIca <- fastICA(lettersNorm, 2);
+    faultIcaDf <- data.frame(class = faultsFactor, ica = faultsIca$S);
+    lettersIcaDf <- data.frame(class = letters$Letter, ica = lettersIca$S);
+    save(faultsIca, lettersIca, faultIcaDf, lettersIcaDf, file="ica.Rda");
+});
+
 getIcaReconstrErr <- function() {
     fname <- "icaReconstrError.Rda";
     faultsIcaTime <- system.time(

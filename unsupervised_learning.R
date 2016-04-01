@@ -802,7 +802,7 @@ getEmClusters <- function() {
     faultsEmCc <- emConfusion(faultsMc, faultsLabels);
     ## The below is really, really slow.
     #lettersMcTime <- system.time(
-    #    lettersMc <- Mclust(lettersNorm, 2:100)
+    #    lettersMc <- Mclust(lettersNorm, seq(2, 300, by=5)
     #);
     ## These were run separately because it takes so damn long:
     load("lettersMc.Rda");
@@ -844,6 +844,9 @@ getOptimalReducedClusters <- function() {
     lettersIcaDims <- 10;
     lettersRcaDims <- 13;
 
+    print("Faults...");
+    faultsClusters <- kmeans(faultsNorm, kFaults, iters, runs);
+    
     print("Faults PCA...");
     faultsPcaTime <- system.time(faultsPca <- prcomp(faultsNorm));
     mtxR <- as.matrix(faultsPca$rotation[,1:faultsPcaDims]);
@@ -869,16 +872,18 @@ getOptimalReducedClusters <- function() {
     faultsCfsClusters <-
         kmeans(faultsNorm[faultsCfs], kFaults, iters, runs);
 
-    inputs <- list(pca = as.matrix(faultsNorm) %*% mtxR,
+    inputs <- list(none = faultsNorm,
+                   pca = as.matrix(faultsNorm) %*% mtxR,
                    ica = faultsIca$S,
                    rca = as.matrix(faultsNorm) %*% as.matrix(faultsRca$mtx),
                    cfs = faultsNorm[faultsCfs]);
     faultsEm <- foreach(input=inputs) %dopar% {
+        cat("..");
         Mclust(input, clRange);
     };
     names(faultsEm) <- names(inputs);
     
-    save(faultsPcaClusters, faultsEm, faultsPcaTime,
+    save(faultsClusters, faultsPcaClusters, faultsEm, faultsPcaTime,
          faultsIcaClusters, faultsIcaTime, faultsRcaClusters,
          faultsRcaTime, faultsCfsClusters, faultsCfsTime,
          file=fname);
@@ -918,7 +923,7 @@ getOptimalReducedClusters <- function() {
     };
     names(lettersEm) <- names(inputs);
     
-    save(faultsPcaClusters, faultsEm, faultsPcaTime,
+    save(faultsClusters, faultsPcaClusters, faultsEm, faultsPcaTime,
          faultsIcaClusters, faultsIcaTime, faultsRcaClusters,
          faultsRcaTime, faultsCfsClusters, faultsCfsTime,
          lettersPcaClusters, lettersEm, lettersPcaTime,
@@ -1307,14 +1312,17 @@ getNnetClusterLearningCurve <- function() {
 
     ## Is there some better way to do this?
     inputs <- list(
-        list(PCA=faultsPcaClusters, type="k"),
-        list(ICA=faultsIcaClusters, type="k"),
-        list(RCA=faultsRcaClusters, type="k"),
-        list(CFS=faultsCfsClusters, type="k"),
-        list(PCA=faultsEm$pca,      type="em"),
-        list(RCA=faultsEm$rca,      type="em"),
-        list(ICA=faultsEm$ica,      type="em"),
-        list(CFS=faultsEm$cfs,      type="em")
+        list(none=faultsClusters, type="k"),
+        list(none=faultsEm$none, type="em")
+        ## So, that was all totally unnecessary:
+        ##list(PCA=faultsPcaClusters, type="k"),
+        ##list(ICA=faultsIcaClusters, type="k"),
+        ##list(RCA=faultsRcaClusters, type="k"),
+        ##list(CFS=faultsCfsClusters, type="k"),
+        ##list(PCA=faultsEm$pca,      type="em"),
+        ##list(RCA=faultsEm$rca,      type="em"),
+        ##list(ICA=faultsEm$ica,      type="em"),
+        ##list(CFS=faultsEm$cfs,      type="em")
         );
     
     nnetClusterLearningCurve <- foreach(input=inputs, .combine="rbind") %dopar% {
@@ -1370,22 +1378,36 @@ getNnetClusterErrs <- function() {
 
     ref <- nnTrain(faultsTrain[inputNames], faultsTest[inputNames], 30);
     ref$algo <- "N/A";
-    ref$inputs <- "Both";
+    ref$inputs <- "N/A";
+    ref$type <- "N/A";
     
     ## Is there some better way to do this?
     inputs <- list(
-        list(PCA=faultsPcaClusters),
-        list(ICA=faultsIcaClusters),
-        list(RCA=faultsRcaClusters),
-        list(CFS=faultsCfsClusters));
+        list(none=faultsClusters, type="k"),
+        list(none=faultsEm$none, type="em")
+        ## So, that was all totally unnecessary:
+        ##list(PCA=faultsPcaClusters, type="k"),
+        ##list(ICA=faultsIcaClusters, type="k"),
+        ##list(RCA=faultsRcaClusters, type="k"),
+        ##list(CFS=faultsCfsClusters, type="k"),
+        ##list(PCA=faultsEm$pca,      type="em"),
+        ##list(RCA=faultsEm$rca,      type="em"),
+        ##list(ICA=faultsEm$ica,      type="em"),
+        ##list(CFS=faultsEm$cfs,      type="em")
+        );
 
     ## Run neural networks using just the clusters as inputs
     nnetClusterErrs <- foreach(input=inputs, .combine="rbind") %do% {
         algo <- names(input)[1];
         cat(algo);
         cat(".");
-        ## Turn class labels into a binary vector:
-        cl <- decodeClassLabels(input[[1]]$cluster);
+        if (input$type == "k") {
+            ## Turn class labels into a binary vector:
+            cl <- decodeClassLabels(input[[1]]$cluster);
+        } else {
+            ## EM's probabilities are already in the form we need:
+            cl <- input[[1]]$z;
+        }
         cat(".");
         ## Split into training & test sets:
         train <- cl[trainIdxs,];
@@ -1394,12 +1416,14 @@ getNnetClusterErrs <- function() {
         err1 <- nnTrain(train, test, 50);
         err1$inputs <- "Clusters";
         err1$algo <- algo;
+        err1$type <- input$type;
         ## Test using the cluster labels *and* normal inputs:
         err2 <- nnTrain(cbind(train, faultsTrain[inputNames]),
                          cbind(test,  faultsTest[inputNames]),
                          50);
         err2$inputs <- "Both";
         err2$algo <- algo;
+        err2$type <- input$type;
         cat(".");
         return(rbind(err1, err2));
     };
@@ -1412,4 +1436,4 @@ getNnetClusterErrs <- function() {
 ## runKmeansReducedDims();
 ## getNnetError();
 getNnetClusterLearningCurve();
-## getNnetClusterErrs();
+getNnetClusterErrs();

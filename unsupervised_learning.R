@@ -20,6 +20,29 @@ library(FSelector);
 source("multiplot.R");
 
 ###########################################################################
+## General
+###########################################################################
+
+## Split ratio 'f' for training data, and the rest (1-f) for testing.
+## Returns a list with items "train" and "test" containing rows taken,
+## in random order, from "frame"; list also has item "idx" which is
+## the indices from 'frame' that were used for the training set (and
+## all others were used for the testing set).
+splitTrainingTest <- function(frame, f) {
+    trainIdx <- sample(nrow(frame), size=f*nrow(frame));
+    train <- frame[trainIdx,];
+    test <- frame[-trainIdx,];
+    return(list(train = train, test = test, idx = trainIdx));
+}
+
+## Turn a confusion matrix into an error rate.  It doesn't matter
+## whether targets are on rows and predictions are on columns, or vice
+## versa.
+confusionToError <- function(mtx) {
+    return(1 - sum(diag(mtx)) / sum(mtx));
+}
+
+###########################################################################
 ## Data Loading & Other Boilerplate
 ###########################################################################
 
@@ -71,27 +94,6 @@ lettersNorm <- data.frame(
 ## And turn 'Letter' into a 26-wide binary matrix (columns A-Z):
 lettersLabels <- as.data.frame(model.matrix( ~ 0 + Letter, letters));
 colnames(lettersLabels) <- levels(letters$Letter);
-
-###########################################################################
-## General
-###########################################################################
-
-## Split ratio 'f' for training data, and the rest (1-f) for testing.
-## Returns a list with items "train" and "test" containing rows taken,
-## in random order, from "frame".
-splitTrainingTest <- function(frame, f) {
-    trainIdx <- sample(nrow(frame), size=f*nrow(frame));
-    train <- frame[trainIdx,];
-    test <- frame[-trainIdx,];
-    return(list(train = train, test = test));
-}
-
-## Turn a confusion matrix into an error rate.  It doesn't matter
-## whether targets are on rows and predictions are on columns, or vice
-## versa.
-confusionToError <- function(mtx) {
-    return(1 - sum(diag(mtx)) / sum(mtx));
-}
 
 ###########################################################################
 ## k-means
@@ -221,26 +223,30 @@ getNearest <- function(confMtx) {
                       nearestRatio = nearestCount / colSums(confMtx)));
 };
 
-## Generate dissimilarity matrices for steel faults:
-tryCatch(
-    faultsDissim <- local({
-        load("faultsDissim.Rda");
-        return(faultsDissim);
-    }),
-    error = function(w) {
-        faultsDissim <- daisy(faultsNorm);
-        save(faultsDissim, file="faultsDissim.Rda");
-    });
-## and likewise for letters (this will generate about 1.4 GB, beware):
-tryCatch(
-    lettersDissim <- local({
-        load("lettersDissim.Rda");
-        return(lettersDissim);
-    }),
-    error = function(w) {
-        lettersDissim <- daisy(lettersNorm);
-        save(lettersDissim, file="lettersDissim.Rda");
-    });
+## This will take awhile (and isn't really needed except for
+## getKmeansClusters):
+getDissimMtx <- function() {
+    ## Generate dissimilarity matrices for steel faults:
+    tryCatch(
+        faultsDissim <- local({
+            load("faultsDissim.Rda");
+            return(faultsDissim);
+        }),
+        error = function(w) {
+            faultsDissim <- daisy(faultsNorm);
+            save(faultsDissim, file="faultsDissim.Rda");
+        });
+    ## and likewise for letters (this will generate about 1.4 GB, beware):
+    tryCatch(
+        lettersDissim <- local({
+            load("lettersDissim.Rda");
+            return(lettersDissim);
+        }),
+        error = function(w) {
+            lettersDissim <- daisy(lettersNorm);
+            save(lettersDissim, file="lettersDissim.Rda");
+        });
+};
 
 ## Works, but plots aren't particularly useful:
 ## dissMtx <- dist(clusters$centers, upper = TRUE, diag = TRUE);
@@ -314,9 +320,6 @@ emConfusion <- function(mclust, labels) {
 ## PCA
 ###########################################################################
 
-faultsPca <- prcomp(faultsNorm);
-lettersPca <- prcomp(lettersNorm);
-
 ## Given a PCA loading matrix and some (compatible) data, compute the
 ## reconstruction error from using just the 1st principal, the first 2
 ## principals, first 3, etc. If loading matrix has dimensions PxL,
@@ -360,10 +363,6 @@ icaReconstrError <- function(data, dimRange) {
             err = sum(((S %*% A) - data)^2)));
     };
 }
-
-faultsIca <- foreach(dims=2:26) %dopar% fastICA(faultsNorm, dims);
-lettersIca <- foreach(dims=2:16) %dopar% fastICA(lettersNorm, dims);
-## But how do I get dimensions into here?
 
 ###########################################################################
 ## Random projections
@@ -837,6 +836,7 @@ getOptimalReducedClusters <- function() {
     rcaRuns <- 5000;
     kFaults <- c(200);
     kLetters <- c(200);
+    clRange <- seq(30, 160, by=5);
     faultsPcaDims <- 10;
     faultsIcaDims <- 10;
     faultsRcaDims <- 14;
@@ -854,7 +854,7 @@ getOptimalReducedClusters <- function() {
     faultsIcaTime <- system.time(
         faultsIca <- fastICA(faultsNorm, faultsIcaDims));
     faultsIcaClusters <- kmeans(faultsIca$S, kFaults, iters, runs);
-
+    
     print("Faults RCA...");
     faultsRcaTime <- system.time(
         faultsRca <- rcaBestProj(faultsNorm, faultsRcaDims, rcaRuns));
@@ -868,6 +868,20 @@ getOptimalReducedClusters <- function() {
                          cbind(faultsNorm, data.frame(Class = faultsFactor))));
     faultsCfsClusters <-
         kmeans(faultsNorm[faultsCfs], kFaults, iters, runs);
+
+    inputs <- list(pca = as.matrix(faultsNorm) %*% mtxR,
+                   ica = faultsIca$S,
+                   rca = as.matrix(faultsNorm) %*% as.matrix(faultsRca$mtx),
+                   cfs = faultsNorm[faultsCfs]);
+    faultsEm <- foreach(input=inputs) %dopar% {
+        Mclust(input, clRange);
+    };
+    names(faultsEm) <- names(inputs);
+    
+    save(faultsPcaClusters, faultsEm, faultsPcaTime,
+         faultsIcaClusters, faultsIcaTime, faultsRcaClusters,
+         faultsRcaTime, faultsCfsClusters, faultsCfsTime,
+         file=fname);
     
     print("Letters PCA...");
     lettersPcaTime <- system.time(lettersPca <- prcomp(lettersNorm));
@@ -894,18 +908,31 @@ getOptimalReducedClusters <- function() {
                                 data.frame(Class = letters$Letter))));
     lettersCfsClusters <-
         kmeans(lettersNorm[lettersCfs], kLetters, iters, runs);
+
+    inputs <- list(pca = as.matrix(lettersNorm) %*% mtxR,
+                   ica = lettersIca$S,
+                   rca = as.matrix(lettersNorm) %*% as.matrix(lettersRca$mtx),
+                   cfs = lettersNorm[lettersCfs]);
+    lettersEm <- foreach(input=inputs) %dopar% {
+        Mclust(input, clRange);
+    };
+    names(lettersEm) <- names(inputs);
     
-    save(faultsPcaClusters, faultsPcaTime, faultsIcaClusters,
-         faultsIcaTime, faultsRcaClusters, faultsRcaTime,
-         faultsCfsClusters, faultsCfsTime, lettersPcaClusters,
-         lettersPcaTime, lettersIcaClusters, lettersIcaTime,
-         lettersRcaClusters, lettersRcaTime, lettersCfsClusters,
-         lettersCfsTime, file=fname);
+    save(faultsPcaClusters, faultsEm, faultsPcaTime,
+         faultsIcaClusters, faultsIcaTime, faultsRcaClusters,
+         faultsRcaTime, faultsCfsClusters, faultsCfsTime,
+         lettersPcaClusters, lettersEm, lettersPcaTime,
+         lettersIcaClusters, lettersIcaTime, lettersRcaClusters,
+         lettersRcaTime, lettersCfsClusters, lettersCfsTime,
+         file=fname);
 };
 
 ###########################################################################
 ## PCA outputs
 ###########################################################################
+
+faultsPca <- prcomp(faultsNorm);
+lettersPca <- prcomp(lettersNorm);
 
 local({
     faultPcaDf <- data.frame(class = faultsFactor, pca = faultsPca$x);
@@ -950,10 +977,10 @@ contribStacked$feature <- colnames(contrib);
 contribStacked$ind <- strtoi(substring(contribStacked$ind, 2));
 ## This is really kludgy but I don't know how to get around it.
 
-ggplot(data=contribStacked,
-       aes(x=ind, y=values, group=feature)) +
-    geom_line(aes(colour=feature)) +
-    xlab("Principal component");
+##ggplot(data=contribStacked,
+##       aes(x=ind, y=values, group=feature)) +
+##    geom_line(aes(colour=feature)) +
+##    xlab("Principal component");
 
 ###########################################################################
 ## ICA outputs
@@ -1102,7 +1129,7 @@ faultsNn <- mlp(faultsTrain[inputNames], faultsTrain[labelNames],
                 targetsTest = faultsTest[labelNames]);
 
 ## So far the below just tests PCA:
-local({
+getNnetLearning <- function(){
     fname <- "nnetLearning.Rda"
     neuralNetTime <- system.time(
         neuralNetErr <-
@@ -1131,18 +1158,22 @@ local({
     neuralNetErr <- rbind(neuralNetErr, err);
     
     save(neuralNetErr, neuralNetTime, file=fname);
-});
+};
 
-nnTrain <- function(train, test) {
-    runs <- 20;
+## This is specific to the steel faults data set:
+nnTrain <- function(train, test, maxit) {
+    runs <- 4;
     errs <- foreach (run = 1:runs, .combine = rbind) %dopar% {
+        cat(run);
+        cat(".");
         model <- mlp(train,
                      faultsTrain[labelNames],
                      size = 30,
                      learnFuncParams = c(0.6, 0.0),
-                     maxit = 15,
+                     maxit = maxit,
                      inputsTest = test,
                      targetsTest = faultsTest[labelNames]);
+        cat(".");
         ## Apply to training & test dataset to get errors:
         trainOutput <- predict(model, train);
         trainIdxs <- apply(faultsTrain[labelNames], 1, which.max);
@@ -1154,6 +1185,7 @@ nnTrain <- function(train, test) {
         idxs <- apply(testOutput, 1, which.max);
         testCorrect <- sum(idxs == testIdxs);
         testErr <- 1 - testCorrect / length(testIdxs);
+        cat(".");
         return(c(trainErr, testErr));
     };
     means <- apply(errs, 1, mean);
@@ -1170,7 +1202,7 @@ getNnetError <- function() {
     ## Train another 'reference' net on original data, but with the more
     ## optimal number of iterations:
     d1 <- ncol(faultsNorm);
-    r <- nnTrain(faultsTrain[inputNames], faultsTest[inputNames]);
+    r <- nnTrain(faultsTrain[inputNames], faultsTest[inputNames], 15);
     refErr <- data.frame(
         dims = c(1, 1, d1, d1),
         algo = "N/A",
@@ -1186,7 +1218,7 @@ getNnetError <- function() {
             mtx <- as.matrix(rcaErr$mtx);
             projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtx;
             projTest <- as.matrix(faultsTest[inputNames]) %*% mtx;
-            err <- nnTrain(projTrain, projTest);
+            err <- nnTrain(projTrain, projTest, 15);
             return(data.frame(dims = dims,
                               algo = "RCA",
                               error = c(err$trainErr, err$testErr),
@@ -1202,7 +1234,7 @@ getNnetError <- function() {
             mtxR <- as.matrix(faultsPca$rotation[,1:dims]);
             projTrain <- as.matrix(faultsTrain[inputNames]) %*% mtxR;
             projTest <- as.matrix(faultsTest[inputNames]) %*% mtxR;
-            err <- nnTrain(projTrain, projTest);
+            err <- nnTrain(projTrain, projTest, 15);
             return(data.frame(dims = dims,
                               algo = "PCA",
                               error = c(err$trainErr, err$testErr),
@@ -1220,7 +1252,7 @@ getNnetError <- function() {
             proj <- ica$K %*% ica$W;
             projTrain <- as.matrix(faultsTrain[inputNames]) %*% proj;
             projTest <- as.matrix(faultsTest[inputNames]) %*% proj;
-            err <- nnTrain(projTrain, projTest);
+            err <- nnTrain(projTrain, projTest, 15);
             return(data.frame(dims = dims,
                               algo = "ICA",
                               error = c(err$trainErr, err$testErr),
@@ -1234,7 +1266,7 @@ getNnetError <- function() {
                                data.frame(Class = faultsFactor)));
         projTrain <- faultsTrain[faultsCfs];
         projTest <- faultsTest[faultsCfs];
-        err <- nnTrain(projTrain, projTest);
+        err <- nnTrain(projTrain, projTest, 15);
         ## Same kludge (to plot properly):
         d0 <- length(faultsCfs);
         d1 <- ncol(faultsNorm);
@@ -1251,6 +1283,116 @@ getNnetError <- function() {
     save(neuralNetErr, refErr, file=fname);
 };
 
+###########################################################################
+## Neural nets using clusters as input
+###########################################################################
+getNnetClusterLearningCurve <- function() {
+    fname <- "nnetClusterLearningCurve.Rda";
+    load("optimalReducedClusters.Rda");
+
+    ## Get indices of training data set:
+    trainIdxs <- tt$idx;
+    ## For consistency, we keep this to how the other datasets were
+    ## generated, since we end up with exactly the same number of instances.
+
+    runMlp <- function(train, test) {
+        mlp(train,
+            faultsTrain[labelNames],
+            size = 30,
+            learnFuncParams = c(0.6, 0.0),
+            maxit = 200,
+            inputsTest = test,
+            targetsTest = faultsTest[labelNames]);
+    };
+
+    ## Is there some better way to do this?
+    inputs <- list(
+        list(PCA=faultsPcaClusters),
+        list(ICA=faultsIcaClusters),
+        list(RCA=faultsRcaClusters),
+        list(CFS=faultsCfsClusters));
+    
+    nnetClusterLearningCurve <- foreach(input=inputs, .combine="rbind") %do% {
+        algo <- names(input)[1];
+        cat(names(input)[1]);
+        cat(".");
+        ## Turn class labels into a binary vector:
+        cl <- decodeClassLabels(input[[1]]$cluster);
+        cat(".");
+        ## Split into training & test sets:
+        train <- cl[trainIdxs,];
+        test <- cl[-trainIdxs,];
+        ## Test with just the cluster labels as inputs:
+        model <- runMlp(train, test);
+        err1 <- stackError(model);
+        err1$algo <- algo;
+        err1$inputs <- "Clusters";
+        ## And with the cluster labels *and* normal inputs:
+        model <- runMlp(cbind(train, faultsTrain[inputNames]),
+                        cbind(test,  faultsTest[inputNames]));
+        err2 <- stackError(model);
+        err2$algo <- algo;
+        err2$inputs <- "Both";
+        return(rbind(err1, err2));
+    };
+
+    ## Get 'reference' error too from original data
+    model <- runMlp(faultsTrain[inputNames], faultsTest[inputNames]);
+    refErr <- stackError(model);
+    refErr$algo <- "N/A";
+    refErr$inputs <- "Both";
+    nnetClusterLearningCurve <- rbind(nnetClusterLearningCurve, refErr);
+    
+    save(nnetClusterLearningCurve, file=fname);
+};
+
+getNnetClusterErrs <- function() {
+    fname <- "nnetClusterErrs.Rda";
+    load("optimalReducedClusters.Rda");
+
+    ## Get indices of training data set:
+    trainIdxs <- tt$idx;
+    ## For consistency, we keep this to how the other datasets were
+    ## generated, since we end up with exactly the same number of instances.
+
+    ref <- nnTrain(faultsTrain[inputNames], faultsTest[inputNames], 30);
+    ref$algo <- "N/A";
+    
+    ## Is there some better way to do this?
+    inputs <- list(
+        list(PCA=faultsPcaClusters),
+        list(ICA=faultsIcaClusters),
+        list(RCA=faultsRcaClusters),
+        list(CFS=faultsCfsClusters));
+
+    ## Run neural networks using just the clusters as inputs
+    nnetClusterErrs <- foreach(input=inputs, .combine="rbind") %do% {
+        algo <- names(input)[1];
+        cat(algo);
+        cat(".");
+        ## Turn class labels into a binary vector:
+        cl <- decodeClassLabels(input[[1]]$cluster);
+        cat(".");
+        ## Split into training & test sets:
+        train <- cl[trainIdxs,];
+        test <- cl[-trainIdxs,];
+        ## Test using just the labels as input:
+        err1 <- nnTrain(train, test, 50);
+        err1$inputs <- "Clusters";
+        err1$algo <- algo;
+        ## Test using the cluster labels *and* normal inputs:
+        model <- nnTrain(cbind(train, faultsTrain[inputNames]),
+                         cbind(test,  faultsTest[inputNames]),
+                         50);
+        err2$algo <- algo;
+        err2$inputs <- "Both";
+        cat(".");
+        return(rbind(err1, err2));
+    };
+    nnetClusterErrs <- rbind(nnetClusterErrs, ref);
+    
+    save(nnetClusterErrs, file=fname);
+};
+
 ## To run before going to bed:
-getNnetError();
-runKmeansReducedDims();
+## runKmeansReducedDims();

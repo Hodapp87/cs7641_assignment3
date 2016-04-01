@@ -1316,6 +1316,7 @@ getNnetClusterLearningCurve <- function() {
         };
         err <- aggregate(err ~ stage + idx, err, mean);
         errSd <- aggregate(err ~ stage + idx, err, mean);
+        return(err);
     };
 
     ## Is there some better way to do this?

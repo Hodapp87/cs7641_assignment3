@@ -867,7 +867,7 @@ getOptimalReducedClusters <- function() {
     rcaRuns <- 5000;
     kFaults <- c(200);
     kLetters <- c(200);
-    clRange <- seq(10, 160, by=5);
+    clRange <- seq(10, 160, by=4);
     faultsPcaDims <- 10;
     faultsIcaDims <- 10;
     faultsRcaDims <- 14;
@@ -1599,3 +1599,5 @@ getNnetClusterErrs <- function() {
 ## getNnetClusterLearningCurve();
 ## getNnetClusterErrs();
 getOptimalReducedClusters();
+getClusterSpectrum();
+getBicCurves();

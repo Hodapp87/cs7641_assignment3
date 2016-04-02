@@ -258,6 +258,20 @@ getDissimMtx <- function() {
 ##     ylab("Cumulative probability") +
 ##     ggtitle("Distance distribution in each cluster")
 
+## For a given range of k values and some data, returns a data frame
+## with column "k" for k value and "withinSs" for the average
+## within-cluster squared error.
+getKmeansSSE <- function(data, ks, iters, runs) {
+    foreach(k = ks, .combine='rbind') %dopar% {
+        cat(k);
+        cat("..");
+        cl <- kmeans(data, k, iters, runs);
+        return(data.frame(
+            k = k,
+            withinSs = cl$tot.withinss / nrow(data)));
+    };
+};
+
 ###########################################################################
 ## EM
 ###########################################################################
@@ -314,6 +328,20 @@ emConfusion <- function(mclust, labels) {
     rownames(cm) <- colnames(labels);
     colnames(cm) <- colnames(labels);
     return(cm);
+};
+
+## Turn a model from the Mclust function into a data frame with
+## columns "numClusters" giving the number of clusters from the model
+## and "bic" giving the best BIC value at that each number of
+## clusters.
+emGetBic <- function(mclust) {
+    ## and then find the max (which is a BIC) & argmax (which is a
+    ## model, EII/VII/EEI/etc.) within each row:
+    bic <- mclust$BIC;
+    m <- apply(bic, 1, function(x) max(x, na.rm = TRUE));
+    data.frame(
+        bic = m / nrow(lettersNorm),
+        numClusters = strtoi(rownames(bic)));
 };
 
 ###########################################################################
@@ -829,6 +857,9 @@ getEmClusters <- function() {
          lettersMcTime, xlab, ylab, bic, file = fname);
 };
 
+## For both datasets, across a range of k, get within-cluster
+## sum-of-squared error and average silhouette value.
+
 getOptimalReducedClusters <- function() {
     fname <- "optimalReducedClusters.Rda";
     iters <- 100;
@@ -836,7 +867,7 @@ getOptimalReducedClusters <- function() {
     rcaRuns <- 5000;
     kFaults <- c(200);
     kLetters <- c(200);
-    clRange <- seq(30, 160, by=5);
+    clRange <- seq(10, 160, by=5);
     faultsPcaDims <- 10;
     faultsIcaDims <- 10;
     faultsRcaDims <- 14;
@@ -846,17 +877,24 @@ getOptimalReducedClusters <- function() {
 
     print("Faults...");
     faultsClusters <- kmeans(faultsNorm, kFaults, iters, runs);
+    faultsRefSse <- getKmeansSSE(faultsNorm, clRange, iters, runs);
+    faultsRefSse$algo <- "N/A";
     
     print("Faults PCA...");
     faultsPcaTime <- system.time(faultsPca <- prcomp(faultsNorm));
     mtxR <- as.matrix(faultsPca$rotation[,1:faultsPcaDims]);
     faultsPcaClusters <- kmeans(as.matrix(faultsNorm) %*% mtxR,
                                 kFaults, iters, runs);
+    faultsPcaSse <- getKmeansSSE(as.matrix(faultsNorm) %*% mtxR,
+                                 clRange, iters, runs);
+    faultsPcaSse$algo <- "PCA";
 
     print("Faults ICA...");
     faultsIcaTime <- system.time(
         faultsIca <- fastICA(faultsNorm, faultsIcaDims));
     faultsIcaClusters <- kmeans(faultsIca$S, kFaults, iters, runs);
+    faultsIcaSse <- getKmeansSSE(faultsIca$S, clRange, iters, runs);
+    faultsIcaSse$algo <- "ICA";
     
     print("Faults RCA...");
     faultsRcaTime <- system.time(
@@ -864,6 +902,9 @@ getOptimalReducedClusters <- function() {
     faultsRcaClusters <- kmeans(
         as.matrix(faultsNorm) %*% as.matrix(faultsRca$mtx),
         kFaults, iters, runs);
+    faultsRcaSse <- getKmeansSSE(
+        as.matrix(faultsNorm) %*% as.matrix(faultsRca$mtx), clRange, iters, runs);
+    faultsRcaSse$algo <- "RCA";
 
     print("Faults CFS...");
     faultsCfsTime <- system.time(
@@ -871,6 +912,8 @@ getOptimalReducedClusters <- function() {
                          cbind(faultsNorm, data.frame(Class = faultsFactor))));
     faultsCfsClusters <-
         kmeans(faultsNorm[faultsCfs], kFaults, iters, runs);
+    faultsCfsSse <- getKmeansSSE(faultsNorm[faultsCfs], clRange, iters, runs);
+    faultsCfsSse$algo <- "CFS";
 
     inputs <- list(none = faultsNorm,
                    pca = as.matrix(faultsNorm) %*% mtxR,
@@ -882,22 +925,36 @@ getOptimalReducedClusters <- function() {
         Mclust(input, clRange);
     };
     names(faultsEm) <- names(inputs);
+
+    faultsSse <- rbind(faultsRefSse, faultsPcaSse, faultsIcaSse,
+                       faultsRcaSse, faultsCfsSse);
     
     save(faultsClusters, faultsPcaClusters, faultsEm, faultsPcaTime,
          faultsIcaClusters, faultsIcaTime, faultsRcaClusters,
          faultsRcaTime, faultsCfsClusters, faultsCfsTime,
+         faultsSse,
          file=fname);
+
+    print("Letters...");
+    lettersClusters <- kmeans(lettersNorm, kLetters, iters, runs);
+    lettersRefSse <- getKmeansSSE(lettersNorm, clRange, iters, runs);
+    lettersRefSse$algo <- "N/A";
     
     print("Letters PCA...");
     lettersPcaTime <- system.time(lettersPca <- prcomp(lettersNorm));
     mtxR <- as.matrix(lettersPca$rotation[,1:lettersPcaDims]);
     lettersPcaClusters <- kmeans(as.matrix(lettersNorm) %*% mtxR,
                                  kLetters, iters, runs);
+    lettersPcaSse <- getKmeansSSE(as.matrix(lettersNorm) %*% mtxR,
+                                 clRange, iters, runs);
+    lettersPcaSse$algo <- "PCA";
 
     print("Letters ICA...");
     lettersIcaTime <- system.time(
         lettersIca <- fastICA(lettersNorm, lettersIcaDims));
     lettersIcaClusters <- kmeans(lettersIca$S, kLetters, iters, runs);
+    lettersIcaSse <- getKmeansSSE(lettersIca$S, clRange, iters, runs);
+    lettersIcaSse$algo <- "ICA";
 
     print("Letters RCA...");
     lettersRcaTime <- system.time(
@@ -905,6 +962,9 @@ getOptimalReducedClusters <- function() {
     lettersRcaClusters <- kmeans(
         as.matrix(lettersNorm) %*% as.matrix(lettersRca$mtx),
         kLetters, iters, runs);
+    lettersRcaSse <- getKmeansSSE(
+        as.matrix(lettersNorm) %*% as.matrix(lettersRca$mtx), clRange, iters, runs);
+    lettersRcaSse$algo <- "RCA";
 
     print("Letters CFS...");
     lettersCfsTime <- system.time(
@@ -913,7 +973,13 @@ getOptimalReducedClusters <- function() {
                                 data.frame(Class = letters$Letter))));
     lettersCfsClusters <-
         kmeans(lettersNorm[lettersCfs], kLetters, iters, runs);
+    lettersCfsSse <- getKmeansSSE(lettersNorm[lettersCfs], clRange, iters, runs);
+    lettersCfsSse$algo <- "CFS";
 
+    lettersSse <- rbind(lettersRefSse, lettersPcaSse, lettersIcaSse,
+                       lettersRcaSse, lettersCfsSse);
+    save(faultsSse, lettersSse, file="reducedSse.Rda");
+    
     inputs <- list(pca = as.matrix(lettersNorm) %*% mtxR,
                    ica = lettersIca$S,
                    rca = as.matrix(lettersNorm) %*% as.matrix(lettersRca$mtx),
@@ -925,11 +991,11 @@ getOptimalReducedClusters <- function() {
     
     save(faultsClusters, faultsPcaClusters, faultsEm, faultsPcaTime,
          faultsIcaClusters, faultsIcaTime, faultsRcaClusters,
-         faultsRcaTime, faultsCfsClusters, faultsCfsTime,
-         lettersPcaClusters, lettersEm, lettersPcaTime,
-         lettersIcaClusters, lettersIcaTime, lettersRcaClusters,
-         lettersRcaTime, lettersCfsClusters, lettersCfsTime,
-         file=fname);
+         faultsRcaTime, faultsCfsClusters, faultsCfsTime,  faultsSse,
+         lettersClusters, lettersPcaClusters, lettersEm,
+         lettersPcaTime, lettersIcaClusters, lettersIcaTime,
+         lettersRcaClusters, lettersRcaTime, lettersCfsClusters,
+         lettersCfsTime, lettersSse, file=fname);
 };
 
 getClusterSpectrum <- function() {
@@ -950,11 +1016,11 @@ getClusterSpectrum <- function() {
             sizes = sort(cl$size, decreasing = TRUE) / sum(cl$size));
     };
 
-    inputs <- list();##list("N/A", lettersClusters),
-                   ##list("PCA", lettersPcaClusters),
-                   ##list("ICA", lettersIcaClusters),
-                   ##list("RCA", lettersRcaClusters),
-                   ##list("CFS", lettersCfsClusters));
+    inputs <- list(list("N/A", lettersClusters),
+                   list("PCA", lettersPcaClusters),
+                   list("ICA", lettersIcaClusters),
+                   list("RCA", lettersRcaClusters),
+                   list("CFS", lettersCfsClusters));
     lettersSpectrum <- foreach (input = inputs, .combine = "rbind") %do% {
         algo <- input[[1]];
         cl <- input[[2]];
@@ -965,6 +1031,32 @@ getClusterSpectrum <- function() {
     };
     
     save(faultsSpectrum, lettersSpectrum, file = fname);
+};
+
+getBicCurves <- function() {
+    fname <- "bicCurves.Rda";
+    load("optimalReducedClusters.Rda");
+
+    faultsBic <- emGetBic(faultsEm$none);
+    faultsBic$algo <- "N/A";
+    
+    faultsPcaBic <- emGetBic(faultsEm$pca);
+    faultsPcaBic$algo <- "PCA";
+    
+    faultsIcaBic <- emGetBic(faultsEm$ica);
+    faultsIcaBic$algo <- "ICA";
+    
+    faultsRcaBic <- emGetBic(faultsEm$rca);
+    faultsRcaBic$algo <- "RCA";
+    
+    faultsCfsBic <- emGetBic(faultsEm$cfs);
+    faultsCfsBic$algo <- "CFS";
+
+    ## TODO: Add letters to this?
+    faultsReducedBic <- rbind(faultsBic, faultsPcaBic, faultsIcaBic,
+                              faultsRcaBic, faultsCfsBic);
+    
+    save(faultsReducedBic, file = fname);
 };
 
 ###########################################################################

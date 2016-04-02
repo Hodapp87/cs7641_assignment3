@@ -932,6 +932,41 @@ getOptimalReducedClusters <- function() {
          file=fname);
 };
 
+getClusterSpectrum <- function() {
+    fname <- "clusterSpectrum.Rda";
+    load("optimalReducedClusters.Rda");
+
+    inputs <- list(list("N/A", faultsClusters),
+                   list("PCA", faultsPcaClusters),
+                   list("ICA", faultsIcaClusters),
+                   list("RCA", faultsRcaClusters),
+                   list("CFS", faultsCfsClusters));
+    faultsSpectrum <- foreach (input = inputs, .combine = "rbind") %do% {
+        algo <- input[[1]];
+        cl <- input[[2]];
+        data.frame(
+            algo  = algo,
+            idx   = 1:length(cl$size),
+            sizes = sort(cl$size, decreasing = TRUE) / sum(cl$size));
+    };
+
+    inputs <- list();##list("N/A", lettersClusters),
+                   ##list("PCA", lettersPcaClusters),
+                   ##list("ICA", lettersIcaClusters),
+                   ##list("RCA", lettersRcaClusters),
+                   ##list("CFS", lettersCfsClusters));
+    lettersSpectrum <- foreach (input = inputs, .combine = "rbind") %do% {
+        algo <- input[[1]];
+        cl <- input[[2]];
+        data.frame(
+            algo  = algo,
+            idx   = 1:length(cl$size),
+            sizes = sort(cl$size, decreasing = TRUE) / sum(cl$size));
+    };
+    
+    save(faultsSpectrum, lettersSpectrum, file = fname);
+};
+
 ###########################################################################
 ## PCA outputs
 ###########################################################################
@@ -940,9 +975,9 @@ faultsPca <- prcomp(faultsNorm);
 lettersPca <- prcomp(lettersNorm);
 
 local({
-    faultPcaDf <- data.frame(class = faultsFactor, pca = faultsPca$x);
+    faultsPcaDf <- data.frame(class = faultsFactor, pca = faultsPca$x);
     lettersPcaDf <- data.frame(class = letters$Letter, pca = lettersPca$x);
-    save(faultsPca, lettersPca, faultPcaDf, lettersPcaDf, file="pca.Rda");
+    save(faultsPca, lettersPca, faultsPcaDf, lettersPcaDf, file="pca.Rda");
 });
 
 ## This might need redone later to compare other reduction techniques
@@ -1022,6 +1057,24 @@ getIcaReconstrErr <- function() {
 ###########################################################################
 ## RCA outputs
 ###########################################################################
+
+getRcaDf <- function() {
+    faultsRca <- rcaBestProj(faultsNorm, 2, 5000);
+    lettersRca <- rcaBestProj(lettersNorm, 2, 5000);
+    faultsRcaDf <- data.frame(class = faultsFactor,
+                              rca = as.matrix(faultsNorm) %*% faultsRca$mtx);
+    lettersRcaDf <- data.frame(class = letters$Letter,
+                               rca = as.matrix(lettersNorm) %*% lettersRca$mtx);
+    save(faultsRca, lettersRca, faultsRcaDf, lettersRcaDf, file="rca.Rda");
+};
+
+##decim <- lettersRcaDf[seq(1,nrow(lettersRcaDf),by=30),];
+##ggplot(decim, aes(label = class, rca.1, rca.2, colour = class)) +
+##    geom_text() +
+##    ggtitle("Letters: First two PCA components")
+
+    #geom_point(alpha = 0.5, size = 2) +
+    ##scale_shape_manual(values=as.numeric(lettersPcaDf$class))
 
 getRcaErr <- function() {
     fname <- "rcaErrorCurve.Rda";
@@ -1322,9 +1375,12 @@ getNnetClusterLearningCurve <- function() {
                          targetsTest = faultsTest[labelNames]);
             return(stackError(model));
         };
-        errMean <- aggregate(err ~ stage + idx, err, mean);
-        errSd <- aggregate(err ~ stage + idx, err, mean);
-        return(errMean);
+        errMean <- aggregate(error ~ stage + idx, err, mean);
+        errSd <- aggregate(error ~ stage + idx, err, sd);
+        return(data.frame(idx     = errMean$idx,
+                          errMean = errMean$err,
+                          stage   = errMean$stage,
+                          errSd   = errSd$err));
     };
 
     ## Is there some better way to do this?
@@ -1364,7 +1420,7 @@ getNnetClusterLearningCurve <- function() {
         err1$type <- input$type;
         ## And with the cluster labels *and* normal inputs:
         err2 <- runMlp(cbind(train, faultsTrain[inputNames]),
-                        cbind(test,  faultsTest[inputNames]));
+                       cbind(test,  faultsTest[inputNames]));
         err2$algo <- algo;
         err2$inputs <- "Both";
         err2$type <- input$type;
@@ -1446,8 +1502,8 @@ getNnetClusterErrs <- function() {
     save(nnetClusterErrs, file=fname);
 };
 
-## To run before going to bed:
 ## runKmeansReducedDims();
 ## getNnetError();
-getNnetClusterLearningCurve();
+## getNnetClusterLearningCurve();
 ## getNnetClusterErrs();
+getOptimalReducedClusters();

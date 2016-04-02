@@ -7,6 +7,10 @@
 ## Assignment 3, Unsupervised Learning (2016-04-03)
 ###########################################################################
 
+## A note to the unfortunate reader of this code: I am sorry.  R is
+## not my language of choice, and I ran low on time that would have
+## otherwise been spent organizing and refactoring.
+
 library(doParallel);
 registerDoParallel(4);
 library(ggplot2);
@@ -325,8 +329,8 @@ emConfusion <- function(mclust, labels) {
     ## Transpose this to make it consistent with other spots:
     cm <- t(confusionMatrix(correct, predicted));
     ## and get proper row & column names (or just nothing):
-    rownames(cm) <- colnames(labels);
-    colnames(cm) <- colnames(labels);
+    ## rownames(cm) <- colnames(labels);
+    ## colnames(cm) <- colnames(labels);
     return(cm);
 };
 
@@ -558,16 +562,21 @@ getKmeansSilhouettes <- function() {
 
 getKmeansConfusionMtx <- function() {
     fname <- "kmeansConfusionMtx.Rda";
-    kFaults <- 200;
+    kFaults <- 50;
     kLetters <- 200;
     iters <- 100;
     runs <- 50;
-    clustersF <- kmeans(faultsNorm, kLetters, iters, runs);
-    clustersL <- kmeans(lettersNorm, kLetters, iters, runs);
+    faultsKmeansTime <- system.time(
+        clustersF <- kmeans(faultsNorm, kLetters, iters, runs)
+    );
+    lettersKmeansTime <- system.time(
+        clustersL <- kmeans(lettersNorm, kLetters, iters, runs)
+    );
     faultsConfusion <- clusterConfusionMatrix(clustersF, faultsLabels);
     lettersConfusion <- clusterConfusionMatrix(clustersL, lettersLabels);
-    save(kLetters, kFaults, clustersF, clustersL, iters, runs,
-         faultsConfusion, lettersConfusion, file=fname);
+    save(kLetters, kFaults, faultsKmeansTime, lettersKmeansTime,
+         clustersF, clustersL, iters, runs, faultsConfusion,
+         lettersConfusion, file=fname);
 };
 
 ###########################################################################
@@ -615,7 +624,7 @@ runKmeansReducedDims <- function() {
 
     rcaRuns <- 5000;
     
-    ks <- c(200);
+    ks <- c(50);
 
     origErr <-
         clusterLabelErrFrame(faultsNorm, faultsLabels, ks, iters, runs);
@@ -865,7 +874,7 @@ getOptimalReducedClusters <- function() {
     iters <- 100;
     runs <- 50;
     rcaRuns <- 5000;
-    kFaults <- c(200);
+    kFaults <- c(50);
     kLetters <- c(200);
     clRange <- seq(10, 160, by=4);
     faultsPcaDims <- 10;
@@ -998,6 +1007,49 @@ getOptimalReducedClusters <- function() {
          lettersCfsTime, lettersSse, file=fname);
 };
 
+getClusterErrTable <- function() {
+    fname <- "reducedClusterErrTable.Rda";
+    load("optimalReducedClusters.Rda");
+    emErr <- function(em, lab) {
+        confusionToError(emConfusion(em, lab));
+    };
+
+    kErr <- function(km, lab) {
+        confusionToError(clusterConfusionMatrix(km, lab));
+    };
+    
+    arr <- array(dim=c(5,4));
+    rownames(arr) <- c("Original", "PCA", "ICA", "RCA", "CFS");
+    colnames(arr) <- c("EM (Steel)",
+                       "k-means (Steel)",
+                       "EM (Letters)",
+                       "k-means (Letters)");
+    arr["Original", "EM (Letters)"] <- emErr(lettersMc, lettersLabels);
+    arr["PCA", "EM (Letters)"] <- emErr(lettersEm$pca, lettersLabels);
+    arr["ICA", "EM (Letters)"] <- emErr(lettersEm$ica, lettersLabels);
+    arr["RCA", "EM (Letters)"] <- emErr(lettersEm$rca, lettersLabels);
+    arr["CFS", "EM (Letters)"] <- emErr(lettersEm$rca, lettersLabels);
+    arr["Original", "EM (Steel)"] <- emErr(faultsMc, faultsLabels);
+    arr["PCA", "EM (Steel)"] <- emErr(faultsEm$pca, faultsLabels);
+    arr["ICA", "EM (Steel)"] <- emErr(faultsEm$ica, faultsLabels);
+    arr["RCA", "EM (Steel)"] <- emErr(faultsEm$rca, faultsLabels);
+    arr["CFS", "EM (Steel)"] <- emErr(faultsEm$rca, faultsLabels);
+    arr["Original", "k-means (Letters)"] <- kErr(lettersClusters, lettersLabels);
+    arr["PCA", "k-means (Letters)"] <- kErr(lettersPcaClusters, lettersLabels);
+    arr["ICA", "k-means (Letters)"] <- kErr(lettersIcaClusters, lettersLabels);
+    arr["RCA", "k-means (Letters)"] <- kErr(lettersRcaClusters, lettersLabels);
+    arr["CFS", "k-means (Letters)"] <- kErr(lettersCfsClusters, lettersLabels);
+    arr["Original", "k-means (Steel)"] <- kErr(faultsClusters, faultsLabels);
+    arr["PCA", "k-means (Steel)"] <- kErr(faultsPcaClusters, faultsLabels);
+    arr["ICA", "k-means (Steel)"] <- kErr(faultsIcaClusters, faultsLabels);
+    arr["RCA", "k-means (Steel)"] <- kErr(faultsRcaClusters, faultsLabels);
+    arr["CFS", "k-means (Steel)"] <- kErr(faultsCfsClusters, faultsLabels);
+    ## TODO
+
+    reducedClusterErrTable <- arr;
+    save(reducedClusterErrTable, file = fname);
+};
+
 getClusterSpectrum <- function() {
     fname <- "clusterSpectrum.Rda";
     load("optimalReducedClusters.Rda");
@@ -1052,11 +1104,28 @@ getBicCurves <- function() {
     faultsCfsBic <- emGetBic(faultsEm$cfs);
     faultsCfsBic$algo <- "CFS";
 
-    ## TODO: Add letters to this?
     faultsReducedBic <- rbind(faultsBic, faultsPcaBic, faultsIcaBic,
                               faultsRcaBic, faultsCfsBic);
+
+    lettersBic <- emGetBic(lettersEm$none);
+    lettersBic$algo <- "N/A";
     
-    save(faultsReducedBic, file = fname);
+    lettersPcaBic <- emGetBic(lettersEm$pca);
+    lettersPcaBic$algo <- "PCA";
+    
+    lettersIcaBic <- emGetBic(lettersEm$ica);
+    lettersIcaBic$algo <- "ICA";
+    
+    lettersRcaBic <- emGetBic(lettersEm$rca);
+    lettersRcaBic$algo <- "RCA";
+    
+    lettersCfsBic <- emGetBic(lettersEm$cfs);
+    lettersCfsBic$algo <- "CFS";
+
+    lettersReducedBic <- rbind(lettersBic, lettersPcaBic, lettersIcaBic,
+                               lettersRcaBic, lettersCfsBic);
+
+    save(faultsReducedBic, lettersReducedBic, file = fname);
 };
 
 ###########################################################################
@@ -1594,10 +1663,14 @@ getNnetClusterErrs <- function() {
     save(nnetClusterErrs, file=fname);
 };
 
-## runKmeansReducedDims();
 ## getNnetError();
 ## getNnetClusterLearningCurve();
 ## getNnetClusterErrs();
-getOptimalReducedClusters();
-getClusterSpectrum();
-getBicCurves();
+
+## getOptimalReducedClusters();
+## getClusterSpectrum();
+## getBicCurves();
+
+## Yes, this needs re-running too:
+## runKmeansReducedDims();
+## getOptimalReducedClusters();

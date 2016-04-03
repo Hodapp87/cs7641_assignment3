@@ -1,4 +1,4 @@
 #!/usr/bin/env Rscript
 
 install.packages(c("ggplot2","RSNNS","mclust","fastICA","cluster",
-                   "doParallel", "RPEnsemble", "FSelector"));
+                   "doParallel", "RPEnsemble", "FSelector","e1071"));

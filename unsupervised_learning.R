@@ -20,6 +20,7 @@ library(cluster);
 library(fastICA);
 library(RPEnsemble);
 library(FSelector);
+library(e1071);
 
 source("multiplot.R");
 
@@ -582,8 +583,6 @@ getKmeansConfusionMtx <- function() {
 ###########################################################################
 ## CFS or who knows what
 ###########################################################################
-## Okay, that's atrocious.
-## faultsFormula <- formula(paste(paste(labelNames, collapse=" + "), " ~ ."));
 
 getCfsReconstrErr <- function() {
     fname <- "cfsReconstrError.Rda";
@@ -1107,7 +1106,7 @@ getBicCurves <- function() {
     faultsReducedBic <- rbind(faultsBic, faultsPcaBic, faultsIcaBic,
                               faultsRcaBic, faultsCfsBic);
 
-    lettersBic <- emGetBic(lettersEm$none);
+    lettersBic <- emGetBic(lettersMc);
     lettersBic$algo <- "N/A";
     
     lettersPcaBic <- emGetBic(lettersEm$pca);
@@ -1307,9 +1306,12 @@ failedTests <- function() {
     ggplot(faultsMdsDf) +
         geom_point(aes(x, y, colour = class), size = 2);
 
+    ## Okay, that's atrocious.
+    faultsFormula <- formula(paste(paste(labelNames, collapse=" + "), " ~ ."));
+    
     ## Faults data is lower-rank for some reason, so remove one column:
-    ## rmCol <- c(-1, -2, -3, -4, -5, -6, -7);
-    ## faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultsLabels));
+    rmCol <- c(-12);
+    faultsLda <- lda(faultsFormula, cbind(faultsNorm[,rmCol], faultsLabels));
 
     lettersLda <- lda(Letter ~ .,
                       cbind(lettersNorm,

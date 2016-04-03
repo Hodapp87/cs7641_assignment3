@@ -20,7 +20,6 @@ library(cluster);
 library(fastICA);
 library(RPEnsemble);
 library(FSelector);
-library(e1071);
 
 source("multiplot.R");
 
@@ -581,7 +580,7 @@ getKmeansConfusionMtx <- function() {
 };
 
 ###########################################################################
-## CFS or who knows what
+## CFS
 ###########################################################################
 
 getCfsReconstrErr <- function() {
@@ -836,26 +835,20 @@ getEmClusters <- function() {
         numClusters = strtoi(names(faultsMc$BIC[,"EII"])),
         test = "Steel faults")
     faultsEmCc <- emConfusion(faultsMc, faultsLabels);
-    ## The below is really, really slow.
-    #lettersMcTime <- system.time(
-    #    lettersMc <- Mclust(lettersNorm, seq(2, 300, by=5)
-    #);
-    ## These were run separately because it takes so damn long:
-    load("lettersMc.Rda");
-    load("lettersMc2.Rda");
-    ## So, combine them together...
-    lettersBicMtx <- as.data.frame(rbind(lettersMc$BIC, lettersMcPt2$BIC));
-    ## and then find the max (which is a BIC) & argmax (which is a
-    ## model, EII/VII/EEI/etc.) within each row:
-    m <- apply(lettersBicMtx, 1, function(x) max(x, na.rm = TRUE));
-    lettersBicMtx$bestModel <- factor(
-        apply(lettersBicMtx, 1, which.max),
-        levels = 1:ncol(lettersBicMtx),
-        labels = colnames(lettersBicMtx));
-    lettersBicMtx$bestBic <- m;
+    lettersMcTime <- system.time(
+        lettersMc <- Mclust(lettersNorm, seq(2, 300, by=5))
+    );
+    ## Then find the max (which is a BIC) & argmax (which is a model,
+    ## EII/VII/EEI/etc.) within each row:
+    m <- apply(lettersMc$BIC, 1, function(x) max(x, na.rm = TRUE));
+    bestModel <- factor(
+        apply(lettersMc$BIC, 1, which.max),
+        levels = 1:ncol(lettersMc$BIC),
+        labels = colnames(lettersMc$BIC));
+    bestBic <- m;
     lettersBic <- data.frame(
-        bic = lettersBicMtx$bestBic / nrow(lettersNorm),
-        numClusters = strtoi(rownames(lettersBicMtx)),
+        bic = bestBic / nrow(lettersNorm),
+        numClusters = strtoi(rownames(lettersMc$BIC)),
         test = "Letters");
     lettersEmCc <- emConfusion(lettersMc, lettersLabels);
     bic <- rbind(faultsBic, lettersBic);
@@ -1665,14 +1658,23 @@ getNnetClusterErrs <- function() {
     save(nnetClusterErrs, file=fname);
 };
 
-## getNnetError();
-## getNnetClusterLearningCurve();
-## getNnetClusterErrs();
-
-## getOptimalReducedClusters();
-## getClusterSpectrum();
-## getBicCurves();
-
-## Yes, this needs re-running too:
-## runKmeansReducedDims();
-## getOptimalReducedClusters();
+getDissimMtx();
+getKmeansClusters();
+getKmeansSilhouettes();
+getKmeansConfusionMtx();
+getCfsReconstrErr();
+runKmeansReducedDims();
+getEmClusters();
+getOptimalReducedClusters();
+getClusterErrTable();
+getClusterSpectrum();
+getBicCurves();
+getPcaReconstrErr();
+getIcaReconstrErr();
+getRcaDf();
+getRcaErr();
+getRcaReconstrErr();
+getNnetLearning();
+getNnetError();
+getNnetClusterLearningCurve();
+getNnetClusterErrs();

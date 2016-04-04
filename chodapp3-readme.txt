@@ -9,6 +9,9 @@ ggplot2, RSNNS, mclust, fastICA, cluster, doParallel, RPEnsemble, FSelector
 The code (minus report & analysis code) is also available at:
 https://github.com/Hodapp87/cs7641_assignment3
 
+Some of the generated data files are here but the large ones have been
+left out.
+
 Short procedure for generating everything:
 1. Install packages in R with:
 install.packages(c("ggplot2","RSNNS","mclust","fastICA","cluster",

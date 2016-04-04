@@ -230,26 +230,9 @@ getNearest <- function(confMtx) {
 ## This will take awhile (and isn't really needed except for
 ## getKmeansClusters):
 getDissimMtx <- function() {
-    ## Generate dissimilarity matrices for steel faults:
-    tryCatch(
-        faultsDissim <- local({
-            load("faultsDissim.Rda");
-            return(faultsDissim);
-        }),
-        error = function(w) {
-            faultsDissim <- daisy(faultsNorm);
-            save(faultsDissim, file="faultsDissim.Rda");
-        });
-    ## and likewise for letters (this will generate about 1.4 GB, beware):
-    tryCatch(
-        lettersDissim <- local({
-            load("lettersDissim.Rda");
-            return(lettersDissim);
-        }),
-        error = function(w) {
-            lettersDissim <- daisy(lettersNorm);
-            save(lettersDissim, file="lettersDissim.Rda");
-        });
+    faultsDissim <- daisy(faultsNorm);
+    ## and likewise for letters (this will use a lot of memory, beware):
+    lettersDissim <- daisy(lettersNorm);
 };
 
 ## Works, but plots aren't particularly useful:
